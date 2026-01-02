@@ -1,0 +1,7 @@
+opencv-python>=4.5.0
+numpy>=1.19.0
+traitlets>=5.0.0
+Jetson.GPIO>=2.0.0
+jetcam>=0.4.0
+mediapipe>=0.10.0
+
