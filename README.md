@@ -49,13 +49,13 @@ The following wiring is configured for **Raspberry Pi 5** (BCM Pin numbering):
 ### 1. Basic Motor Test
 Run a simple sequence to verify wiring and motor rotation direction.
 ```bash
-python ln298ntest.py
+python l298ntest.py
 ```
 
 ### 2. Terminal Remote Control
 Control the robot using your keyboard (WASD).
 ```bash
-python ln298n_control.py
+python l298n_control.py
 ```
 - **W/S**: Forward / Backward
 - **A/D**: Spot Turn Left / Right
@@ -65,7 +65,7 @@ python ln298n_control.py
 ### 3. Web Control + Camera Stream
 Starts a Flask web server for controlling the robot from a phone or browser.
 ```bash
-python ln298n_cam_stream.py
+python l298n_cam_stream.py
 ```
 - Access via `http://<your-pi-ip>:8000`
 - **Requires**: `ustreamer` running on port 8080 for the video feed.
@@ -73,11 +73,11 @@ python ln298n_cam_stream.py
 ### 4. AI Person Follow
 Uses YOLOv11 (ONNX) to detect and follow a person.
 ```bash
-python ln298n_yolo.py
+python l298n_yolo.py
 ```
 
 ### 5. Gesture Lock + Follow
 Advanced mode that "locks" onto a target using a hand gesture (Open Hand to lock, Fist to unlock).
 ```bash
-python ln298n_lock.py
+python l298n_lock.py
 ```
