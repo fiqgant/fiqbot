@@ -9,7 +9,7 @@ from gpiozero import Device, Motor
 from gpiozero.pins.lgpio import LGPIOFactory
 
 # =========================
-# CONFIG
+# CONFIGURATION
 # =========================
 ONNX_PATH = "yolo11n.onnx"
 
@@ -22,9 +22,11 @@ CONF_TH = 0.35
 NMS_TH = 0.45
 PERSON_CLASS_ID = 0
 
+# BCM Pin Configuration
 IN1, IN2, IN3, IN4 = 18, 19, 20, 21
 ENA, ENB = 12, 13
 
+# PID / Motion Tuning
 KP_TURN = 1.2
 KP_FWD = 1.4
 MAX_SPEED = 0.80
@@ -33,11 +35,13 @@ MIN_MOVE = 0.25
 TARGET_AREA = 0.22
 AREA_DEADBAND = 0.02
 
+# Turning Tuning
 TURN_LIMIT = 0.75
 TURN_MIN = 0.22
 X_DEADBAND = 0.06
 INVERT_TURN = False
 
+# Gesture / Lock Configuration
 LOCK_HOLD_FRAMES = 6
 UNLOCK_HOLD_FRAMES = 6
 GESTURE_COOLDOWN_S = 1.0
@@ -51,7 +55,7 @@ INFER_EVERY_N_FRAMES = 1
 SHOW_UI = True
 DRAW_ALL_PERSONS = False
 
-# Wayland: gunakan "maximized borderless style"
+# Wayland Support: Use borderless window maximizing strategy
 TARGET_SCREEN_W = 1920
 TARGET_SCREEN_H = 1080
 # =========================
@@ -115,14 +119,14 @@ def fit_to_window(frame, win_w, win_h):
     return canvas
 
 
-# ===== Motor =====
+# ===== Motor Initialization (Pi 5 optimized) =====
 Device.pin_factory = LGPIOFactory()
-motor_a = Motor(forward=IN1, backward=IN2, enable=ENA, pwm=True)
-motor_b = Motor(forward=IN4, backward=IN3, enable=ENB, pwm=True)
+motor_left = Motor(forward=IN1, backward=IN2, enable=ENA, pwm=True)
+motor_right = Motor(forward=IN4, backward=IN3, enable=ENB, pwm=True)
 
-def stop_all():
-    motor_a.stop()
-    motor_b.stop()
+def stop_motors():
+    motor_left.stop()
+    motor_right.stop()
 
 def set_motor(motor: Motor, v: float):
     v = clamp(v, -MAX_SPEED, MAX_SPEED)
@@ -135,7 +139,7 @@ def set_motor(motor: Motor, v: float):
         motor.backward(-v)
 
 
-# ===== Camera thread =====
+# ===== Camera Thread =====
 class CamThread:
     def __init__(self, index, w, h, fps):
         self.cap = cv2.VideoCapture(index, cv2.CAP_V4L2)
@@ -145,7 +149,7 @@ class CamThread:
         self.cap.set(cv2.CAP_PROP_FPS, fps)
         self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         if not self.cap.isOpened():
-            raise RuntimeError("Kamera tidak kebuka. Coba ganti CAM_INDEX atau cek /dev/video*")
+            raise RuntimeError("Camera failed to open. Check CAM_INDEX or permissions.")
         self.lock = threading.Lock()
         self.frame = None
         self.ok = False
@@ -176,13 +180,16 @@ class CamThread:
             self.t.join(timeout=1.0)
         except:
             pass
-        self.cap.release()
+        try:
+            self.cap.release()
+        except:
+            pass
 
 
 cam = CamThread(CAM_INDEX, FRAME_W, FRAME_H, CAM_FPS)
 
 
-# ===== ONNXRuntime =====
+# ===== ONNX Runtime Initialization =====
 so = ort.SessionOptions()
 so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
 so.intra_op_num_threads = 4
@@ -294,7 +301,7 @@ def choose_target_strict(person_boxes, hx, hy):
 
 
 # ===== UI (Wayland-friendly maximize) =====
-WIN = "Robot Follow - Wayland Friendly"
+WIN = "FiqBot - Gesture Lock Follow"
 cv2.namedWindow(WIN, cv2.WINDOW_NORMAL)
 cv2.resizeWindow(WIN, TARGET_SCREEN_W, TARGET_SCREEN_H)
 cv2.moveWindow(WIN, 0, 0)
@@ -327,7 +334,7 @@ try:
         h0, w0 = frame.shape[:2]
         frame_id += 1
 
-        # window size aktual (kalau berhasil)
+        # Get actual window size if possible
         try:
             _, _, win_w, win_h = cv2.getWindowImageRect(WIN)
             if win_w <= 0 or win_h <= 0:
@@ -335,7 +342,7 @@ try:
         except:
             win_w, win_h = TARGET_SCREEN_W, TARGET_SCREEN_H
 
-        # ---- Hands ----
+        # ---- Hands Detection ----
         gesture = "NONE"
         hx = hy = None
 
@@ -353,7 +360,7 @@ try:
             open_count = open_count + 1 if gesture == "OPEN" else 0
             fist_count = fist_count + 1 if gesture == "FIST" else 0
 
-        # ---- YOLO ----
+        # ---- YOLOv11 Detection ----
         person_boxes = []
         tracked = None
 
@@ -399,7 +406,7 @@ try:
                 infer_fps = 0.9 * infer_fps + 0.1 * (1.0 / dt) if infer_fps > 0 else (1.0 / dt)
             prev_infer_t = now
 
-        # ---- Lock / Unlock ----
+        # ---- Lock / Unlock Logic ----
         if not locked:
             if open_count >= LOCK_HOLD_FRAMES and hx is not None:
                 cand = choose_target_strict(person_boxes, hx, hy) if REQUIRE_HAND_IN_BOX else None
@@ -415,9 +422,9 @@ try:
                 target_box = None
                 cooldown_until = now + GESTURE_COOLDOWN_S
                 fist_count = 0
-                stop_all()
+                stop_motors()
 
-        # ---- Track target ----
+        # ---- Track Target ----
         if locked and target_box is not None and person_boxes:
             best = None
             best_iou = 0.0
@@ -431,13 +438,13 @@ try:
                 target_box = best
                 target_last_seen = now
 
-        # ---- Control ----
+        # ---- Motion Control ----
         if not locked:
-            stop_all()
+            stop_motors()
         else:
             if tracked is None:
                 if (now - target_last_seen) > TARGET_LOST_GRACE:
-                    stop_all()
+                    stop_motors()
             else:
                 x1, y1, x2, y2 = tracked
                 cx = (x1 + x2) * 0.5
@@ -463,10 +470,10 @@ try:
                 left = apply_min(base + turn)
                 right = apply_min(base - turn)
 
-                set_motor(motor_a, left)
-                set_motor(motor_b, right)
+                set_motor(motor_left, left)
+                set_motor(motor_right, right)
 
-        # ---- UI ----
+        # ---- UI Visualization ----
         vis = frame
         cv2.line(vis, (w0 // 2, 0), (w0 // 2, h0), (0, 255, 255), 2)
 
@@ -492,7 +499,7 @@ try:
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
         cv2.putText(vis, f"{status} | Gesture {gesture}", (10, 55),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-        cv2.putText(vis, "Wayland mode: resized window. Press q to quit", (10, h0 - 10),
+        cv2.putText(vis, "Wayland Mode: Press Q to Quit", (10, h0 - 10),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2)
 
         show = fit_to_window(vis, win_w, win_h)
@@ -505,9 +512,9 @@ try:
 except KeyboardInterrupt:
     pass
 finally:
-    stop_all()
-    motor_a.close()
-    motor_b.close()
+    stop_motors()
+    motor_left.close()
+    motor_right.close()
     cam.release()
     try:
         cv2.destroyAllWindows()

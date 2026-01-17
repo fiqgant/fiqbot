@@ -7,7 +7,7 @@ from gpiozero import Device, Motor
 from gpiozero.pins.lgpio import LGPIOFactory
 
 # =========================
-# CONFIG
+# CONFIGURATION
 # =========================
 ONNX_PATH = "yolo11n.onnx"
 CAM_INDEX = 0
@@ -19,11 +19,11 @@ CONF_TH = 0.35
 NMS_TH = 0.45
 PERSON_CLASS_ID = 0
 
-# Motor pins BCM
+# BCM Pin Configuration
 IN1, IN2, IN3, IN4 = 18, 19, 20, 21
 ENA, ENB = 12, 13
 
-# Follow tuning
+# PID / Motion Tuning
 KP_TURN = 1.2
 KP_FWD = 1.4
 MAX_SPEED = 0.80
@@ -33,13 +33,13 @@ TARGET_AREA = 0.22
 AREA_DEADBAND = 0.02
 LOST_TIMEOUT = 0.6
 
-# Turn behavior
+# Turning Tuning
 TURN_LIMIT = 0.75
 TURN_MIN = 0.22
 X_DEADBAND = 0.06
-INVERT_TURN = False   # kalau belok kebalik -> True
+INVERT_TURN = False   # Set True if the robot turns in the opposite direction
 
-# UI
+# UI Options
 SHOW_UI = True
 UI_SCALE = 1.0
 # =========================
@@ -61,14 +61,14 @@ def apply_min(v: float) -> float:
     return v
 
 
-# ===== Motor init (Pi 5 friendly) =====
+# ===== Motor Initialization (Pi 5 optimized) =====
 Device.pin_factory = LGPIOFactory()
-motor_a = Motor(forward=IN1, backward=IN2, enable=ENA, pwm=True)  # kiri
-motor_b = Motor(forward=IN4, backward=IN3, enable=ENB, pwm=True)  # kanan (dibalik)
+motor_left = Motor(forward=IN1, backward=IN2, enable=ENA, pwm=True)
+motor_right = Motor(forward=IN4, backward=IN3, enable=ENB, pwm=True)
 
-def stop_all():
-    motor_a.stop()
-    motor_b.stop()
+def stop_motors():
+    motor_left.stop()
+    motor_right.stop()
 
 def set_motor(motor: Motor, v: float):
     v = clamp(v, -MAX_SPEED, MAX_SPEED)
@@ -81,7 +81,7 @@ def set_motor(motor: Motor, v: float):
         motor.backward(-v)
 
 
-# ===== Camera init (V4L2 + MJPG) =====
+# ===== Camera Initialization =====
 cap = cv2.VideoCapture(CAM_INDEX, cv2.CAP_V4L2)
 cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_W)
@@ -89,10 +89,10 @@ cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_H)
 cap.set(cv2.CAP_PROP_FPS, CAM_FPS)
 cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 if not cap.isOpened():
-    raise RuntimeError("Kamera tidak kebuka. Coba ganti CAM_INDEX atau cek /dev/video*")
+    raise RuntimeError("Camera failed to open. Check CAM_INDEX or /dev/video* permissions.")
 
 
-# ===== ONNXRuntime =====
+# ===== ONNX Runtime Initialization =====
 sess = ort.InferenceSession(ONNX_PATH, providers=["CPUExecutionProvider"])
 in_name = sess.get_inputs()[0].name
 out_names = [o.name for o in sess.get_outputs()]
@@ -131,9 +131,10 @@ def xywh_to_xyxy(xywh):
 
 def parse_output_any(outs, conf_th):
     """
+    Parses YOLO output for multiple shapes:
     A) (C,N)/(N,C): [x,y,w,h, cls...]
     B) (N,6): [x1,y1,x2,y2,score,cls]
-    return: boxes_xyxy (N,4) in letterbox coords, scores (N,), cls (N,)
+    Returns: boxes_xyxy (N,4), scores (N,), cls (N,)
     """
     out = np.array(outs[0])
 
@@ -193,7 +194,7 @@ try:
         outs = sess.run(out_names, {in_name: blob})
         boxes_lb, scores, cls = parse_output_any(outs, CONF_TH)
 
-        # only person
+        # Filter for Person class only
         mask = (cls == PERSON_CLASS_ID)
         boxes_lb = boxes_lb[mask]
         scores = scores[mask]
@@ -204,11 +205,11 @@ try:
 
         if boxes_lb.shape[0] == 0:
             if (now - last_seen) > LOST_TIMEOUT:
-                stop_all()
+                stop_motors()
         else:
             last_seen = now
 
-            # NMS
+            # Non-Maximum Suppression (NMS)
             nms_boxes = []
             nms_scores = []
             for i in range(boxes_lb.shape[0]):
@@ -225,7 +226,7 @@ try:
                 x2_l = x1_l + w_l
                 y2_l = y1_l + h_l
 
-                # map to original
+                # Map back to original image coordinates
                 x1 = (x1_l - pad_w) / scale
                 y1 = (y1_l - pad_h) / scale
                 x2 = (x2_l - pad_w) / scale
@@ -239,7 +240,7 @@ try:
                 best_box = (x1, y1, x2, y2)
                 best_score = nms_scores[best_i]
 
-                # FOLLOW CONTROL
+                # Motion Control Logic
                 cx = (x1 + x2) * 0.5
                 err_x = (cx - (w0 * 0.5)) / (w0 * 0.5)
                 if INVERT_TURN:
@@ -256,7 +257,7 @@ try:
                 base = KP_FWD * err_a
                 turn = KP_TURN * err_x
 
-                # force minimal turn if target left/right
+                # Force minimal turn if target is off-center to avoid stalling
                 if err_x != 0.0 and abs(turn) < TURN_MIN:
                     turn = TURN_MIN * sign(err_x)
                 turn = clamp(turn, -TURN_LIMIT, TURN_LIMIT)
@@ -264,23 +265,23 @@ try:
                 left = apply_min(base + turn)
                 right = apply_min(base - turn)
 
-                set_motor(motor_a, left)
-                set_motor(motor_b, right)
+                set_motor(motor_left, left)
+                set_motor(motor_right, right)
 
-        # FPS calc
+        # FPS Calculation
         dt = now - t0
         if dt > 0:
             fps = 0.9 * fps + 0.1 * (1.0 / dt) if fps > 0 else (1.0 / dt)
         t0 = now
 
-        # UI draw
+        # UI Visualization
         if SHOW_UI:
             vis = frame
             if UI_SCALE != 1.0:
                 vis = cv2.resize(vis, None, fx=UI_SCALE, fy=UI_SCALE, interpolation=cv2.INTER_LINEAR)
 
             hh, ww = vis.shape[:2]
-            # center line
+            # Draw centerline
             cv2.line(vis, (ww // 2, 0), (ww // 2, hh), (0, 255, 255), 2)
 
             if best_box is not None:
@@ -293,24 +294,24 @@ try:
                 cx = (x1 + x2) // 2
                 cy = (y1 + y2) // 2
                 cv2.circle(vis, (cx, cy), 5, (0, 255, 0), -1)
-                cv2.putText(vis, f"person {best_score:.2f}", (x1, max(20, y1 - 8)),
+                cv2.putText(vis, f"Person {best_score:.2f}", (x1, max(20, y1 - 8)),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
             cv2.putText(vis, f"FPS: {fps:.1f}", (10, 25),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-            cv2.putText(vis, "Press q to quit", (10, 50),
+            cv2.putText(vis, "Press Q to Quit", (10, 50),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
-            cv2.imshow("YOLO Follow Person", vis)
+            cv2.imshow("FiqBot - YOLO Following", vis)
             if (cv2.waitKey(1) & 0xFF) == ord("q"):
                 break
 
 except KeyboardInterrupt:
     pass
 finally:
-    stop_all()
-    motor_a.close()
-    motor_b.close()
+    stop_motors()
+    motor_left.close()
+    motor_right.close()
     cap.release()
     try:
         cv2.destroyAllWindows()

@@ -93,7 +93,7 @@ ustreamer --host=0.0.0.0 --port=8080 -r 640x480 -f 30 &
 ### 1. Verification Test
 Run a quick diagnostic to check motor rotation and wiring.
 ```bash
-python l298ntest.py
+python l298n_test.py
 ```
 
 ### 2. Terminal Remote

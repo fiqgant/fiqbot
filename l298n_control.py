@@ -5,52 +5,55 @@ import curses
 
 Device.pin_factory = LGPIOFactory()
 
+# BCM Pin Configuration
 IN1, IN2, IN3, IN4 = 18, 19, 20, 21
 ENA, ENB = 12, 13
 
-motor_a = Motor(forward=IN1, backward=IN2, enable=ENA, pwm=True)  # kiri
-motor_b = Motor(forward=IN4, backward=IN3, enable=ENB, pwm=True)  # kanan (dibalik)
+# Motor Initialization
+# Right motor is inverted to match chassis direction
+motor_left = Motor(forward=IN1, backward=IN2, enable=ENA, pwm=True)
+motor_right = Motor(forward=IN4, backward=IN3, enable=ENB, pwm=True)
 
 speed = 0.7
 turn_speed = 0.6
 
 def stop():
-    motor_a.stop()
-    motor_b.stop()
+    motor_left.stop()
+    motor_right.stop()
 
-def maju():
-    motor_a.forward(speed)
-    motor_b.forward(speed)
+def move_forward():
+    motor_left.forward(speed)
+    motor_right.forward(speed)
 
-def mundur():
-    motor_a.backward(speed)
-    motor_b.backward(speed)
+def move_backward():
+    motor_left.backward(speed)
+    motor_right.backward(speed)
 
-def putar_kiri():
-    motor_a.backward(turn_speed)
-    motor_b.forward(turn_speed)
+def spin_left():
+    motor_left.backward(turn_speed)
+    motor_right.forward(turn_speed)
 
-def putar_kanan():
-    motor_a.forward(turn_speed)
-    motor_b.backward(turn_speed)
+def spin_right():
+    motor_left.forward(turn_speed)
+    motor_right.backward(turn_speed)
 
 def main(stdscr):
     curses.curs_set(0)
-    stdscr.nodelay(True)   # non-blocking
+    stdscr.nodelay(True)   # Non-blocking input
     stdscr.keypad(True)
-    stdscr.addstr(0, 0, "Mode tahan (terminal): tahan W/A/S/D | X stop | Q keluar")
+    stdscr.addstr(0, 0, "Hold Mode (Terminal): Hold W/A/S/D to move | X to Stop | Q to Quit")
     stdscr.refresh()
 
     last_key_time = 0
     held = None  # 'w','a','s','d' or None
-    timeout_release = 0.12  # kalau tidak ada repeat input, anggap dilepas
+    timeout_release = 0.12  # Threshold to detect key release (no repeat signal)
 
     while True:
         ch = stdscr.getch()
         now = time.time()
 
         if ch != -1:
-            # konversi ke huruf kecil
+            # Convert to lowercase
             try:
                 k = chr(ch).lower()
             except ValueError:
@@ -66,15 +69,15 @@ def main(stdscr):
                 last_key_time = now
 
                 if held == "w":
-                    maju()
+                    move_forward()
                 elif held == "s":
-                    mundur()
+                    move_backward()
                 elif held == "a":
-                    putar_kiri()
+                    spin_left()
                 elif held == "d":
-                    putar_kanan()
+                    spin_right()
 
-        # ?lepas tombol? di terminal dideteksi dari tidak adanya repeat input
+        # Detect key release via timeout (lack of repeat signal)
         if held is not None and (now - last_key_time) > timeout_release:
             held = None
             stop()
@@ -85,5 +88,5 @@ try:
     curses.wrapper(main)
 finally:
     stop()
-    motor_a.close()
-    motor_b.close()
+    motor_left.close()
+    motor_right.close()
