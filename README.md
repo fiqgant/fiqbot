@@ -138,7 +138,7 @@ fiqbot/
 ├── l298n_control.py      # Terminal-based remote control
 ├── l298n_lock.py         # Gesture-based target locking AI
 ├── l298n_yolo.py         # Basic person following AI
-├── l298n_test.py          # Hardware diagnostic script
+├── l298n_test.py         # Hardware diagnostic script
 ├── requirements.txt      # Python dependencies
 └── README.md             # Documentation
 ```
