@@ -1,0 +1,71 @@
+# =========================
+# Python / venv
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+robot/          # venv kamu
+
+# =========================
+# OS / editor
+# =========================
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# =========================
+# Logs / temp
+# =========================
+*.log
+*.tmp
+*.swp
+
+# =========================
+# Ultralytics / YOLO outputs
+# =========================
+runs/
+*.pt
+*.onnx
+*.engine
+*.tflite
+*.ncnn
+*.param
+*.bin
+yolo11n_ncnn_model/
+
+# Kalau kamu mau tetap simpan model tertentu, hapus baris *.pt / *.onnx
+# lalu ignore per-folder saja.
+
+# =========================
+# Media / recordings
+# =========================
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.jpg
+*.png
+
+# =========================
+# Jupyter
+# =========================
+.ipynb_checkpoints/
+robot/
+# venv
+robot/
+.venv/
+venv/
+
+# models / outputs
+yolo11n_ncnn_model/
+*.pt
+*.onnx
+runs/
+
+# cache
+__pycache__/
+*.pyc
