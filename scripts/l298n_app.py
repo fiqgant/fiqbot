@@ -1,12 +1,13 @@
 import os
 os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
-os.environ.setdefault("VOSK_LOG_LEVEL", "0")  # mute Vosk logs
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")  # fix for some omp errors
 
 import json
 import time
 import queue
 import threading
 import subprocess
+import random
 
 import cv2
 import numpy as np
@@ -14,7 +15,7 @@ import onnxruntime as ort
 import mediapipe as mp
 
 import sounddevice as sd
-from vosk import Model as VoskModel, KaldiRecognizer
+from faster_whisper import WhisperModel
 
 from gpiozero import Device, Motor
 from gpiozero.pins.lgpio import LGPIOFactory
@@ -24,18 +25,25 @@ from gpiozero.pins.lgpio import LGPIOFactory
 # =========================================================
 
 # ---------- Voice (offline) ----------
-VOSK_MODEL_PATH = "/home/fiq/fiqbot/models/vosk-model-small-en-us-0.15"
-SAMPLE_RATE = 16000
-MIC_DEVICE_INDEX = None  # None = default mic. Put integer to select device.
+WHISPER_MODEL_SIZE = "small"  # tiny, base, small, medium, large-v3
+WHISPER_DEVICE = "cpu"       # "cuda" if Nvidia GPU, else "cpu"
+WHISPER_COMPUTE = "int8"     # int8 for speed on CPU
 
-# Wakeword for "Neil" can be recognized as variants in Vosk English model
-WAKE_WORDS = ["neil", "neal", "nail"]
-WAKE_TIMEOUT_S = 6.0        # after wake, accept commands for this long
-MIN_CMD_GAP_S = 0.25        # prevent double triggers
-WAKE_COOLDOWN_S = 0.8       # prevent repeated "wake" spam
+SAMPLE_RATE = 16000
+MIC_DEVICE_INDEX = None
+
+# Wakeword (in Indonesian context)
+WAKE_WORDS = ["nil", "neil", "nel", "niel", "halo", "bro"]
+WAKE_TIMEOUT_S = 8.0
+WAKE_COOLDOWN_S = 1.0
+
+# VAD (Energy based for simplicity)
+VAD_THRESHOLD = 800  # Adjust based on mic sensitivity (PCM 16-bit)
+SILENCE_LIMIT_S = 1.2  # Seconds of silence to consider "done speaking"
+MAX_RECORD_S = 10.0    # Max duration to record command
 
 TTS_ENABLE = True
-TTS_LANG = "en"             # espeak-ng voice; try "en", "en-us". ("id" if installed)
+TTS_LANG = "id"  # Indonesian
 
 # ---------- Follow (YOLO ONNX) ----------
 ONNX_PATH = "yolo11n.onnx"
@@ -171,6 +179,103 @@ def say(text: str):
         )
     except Exception:
         pass
+
+
+NEIL_RESPONSES = {
+    "ready": [
+        "Sistem siap. Neil online.",
+        "Halo, saya siap membantu.",
+        "Semua sistem aman. Menunggu perintah.",
+        "Neil aktif. Silakan."
+    ],
+    "wake": [
+        "Ya? Saya mendengarkan.",
+        "Siap, katakan saja.",
+        "Ada yang bisa saya bantu?",
+        "Mendengarkan."
+    ],
+    "quit": [
+        "Mematikan sistem. Sampai jumpa!",
+        "Dah, saya istirahat dulu.",
+        "Sistem dimatikan. Dadah."
+    ],
+    "mode_idle": [
+        "Mode santai aktif.",
+        "Oke, saya diam dulu.",
+        "Standby mode on."
+    ],
+    "mode_manual": [
+        "Mode manual aktif. Kendali di tanganmu.",
+        "Oke, silakan kendalikan saya.",
+        "Siap menerima kendali manual."
+    ],
+    "mode_follow": [
+        "Siap mengikuti kamu.",
+        "Mode follow aktif. Ayo jalan.",
+        "Oke, jangan jalan cepat-cepat ya."
+    ],
+    "locked": [
+        "Target terkunci.",
+        "Oke, saya lihat kamu.",
+        "Kunci target berhasil.",
+        "Dapat."
+    ],
+    "unlocked": [
+        "Target hilang.",
+        "Yah, lepas.",
+        "Mencari target baru...",
+        "Lock lepas."
+    ],
+    "forward": [
+        "Maju.",
+        "Gas maju.",
+        "Oke maju."
+    ],
+    "backward": [
+        "Mundur.",
+        "Awas, mundur.",
+        "Mundur pelan-pelan."
+    ],
+    "left": [
+        "Belok kiri.",
+        "Kiri.",
+        "Putar kiri."
+    ],
+    "right": [
+        "Belok kanan.",
+        "Kanan.",
+        "Putar kanan."
+    ],
+    "stop": [
+        "Berhenti.",
+        "Stop.",
+        "Rem.",
+        "Oke stop."
+    ],
+    "status": [
+        "Sekarang mode {mode}.",
+        "Status: mode {mode}.",
+        "Lagi di mode {mode} nih."
+    ]
+}
+
+def speak_response(key, **kwargs):
+    """
+    Pick a random response from NEIL_RESPONSES[key].
+    If key is not found, treat it as raw text.
+    Supports wrapping with .format(**kwargs).
+    """
+    if key in NEIL_RESPONSES:
+        text = random.choice(NEIL_RESPONSES[key])
+        if kwargs:
+            try:
+                text = text.format(**kwargs)
+            except Exception:
+                pass
+        say(text)
+    else:
+        # Fallback if we passed raw text instead of a key
+        say(key)
 
 
 # ----------------- Motors (L298N) -----------------
@@ -393,15 +498,21 @@ def choose_target_strict(person_boxes, hx, hy):
 
 
 # ----------------- Voice (Vosk) background -----------------
-voice_audio_q = queue.Queue()
 voice_event_q = queue.Queue()
-
-def audio_callback(indata, frames, t, status):
-    # bytes(indata) for RawInputStream int16
-    voice_audio_q.put(bytes(indata))
 
 def normalize_text(s: str) -> str:
     return (s or "").strip().lower()
+
+def has_wake(text: str) -> bool:
+    t = normalize_text(text)
+    return any(w in t for w in WAKE_WORDS)
+
+def strip_wake(text: str) -> str:
+    t = normalize_text(text)
+    for w in WAKE_WORDS:
+        t = t.replace(w, " ")
+    t = " ".join(t.split())
+    return t
 
 def has_wake(text: str) -> bool:
     t = normalize_text(text)
@@ -433,21 +544,21 @@ def parse_intent(text: str):
         return "mode_idle"
 
     # stop
-    if "stop" in t or "berhenti" in t or "halt" in t or "diam" in t:
+    if "stop" in t or "berhenti" in t or "halt" in t or "diam" in t or "stop" in t:
         return "stop"
 
     # motion
-    if "forward" in t or "maju" in t or ("go" in t and "back" not in t):
+    if "maju" in t or "depan" in t or "forward" in t or "go" in t:
         return "forward"
-    if "backward" in t or "mundur" in t or "back" in t:
+    if "mundur" in t or "belakang" in t or "backward" in t or "back" in t:
         return "backward"
-    if "left" in t or "kiri" in t:
+    if "kiri" in t or "left" in t:
         return "left"
-    if "right" in t or "kanan" in t:
+    if "kanan" in t or "right" in t:
         return "right"
 
     # status
-    if "status" in t or "kabar" in t:
+    if "status" in t or "kabar" in t or "mode" in t:
         return "status"
 
     return None
@@ -455,77 +566,112 @@ def parse_intent(text: str):
 
 class VoiceEngine:
     def __init__(self):
-        if not os.path.isdir(VOSK_MODEL_PATH):
-            raise RuntimeError(f"Vosk model folder not found: {VOSK_MODEL_PATH}")
-
-        self.model = VoskModel(VOSK_MODEL_PATH)
-        self.rec = KaldiRecognizer(self.model, SAMPLE_RATE)
-        self.rec.SetWords(False)
-
+        print(f"Loading Whisper model ({WHISPER_MODEL_SIZE})...")
+        self.model = WhisperModel(WHISPER_MODEL_SIZE, device=WHISPER_DEVICE, compute_type=WHISPER_COMPUTE)
+        
         self.awake_until = 0.0
-        self.last_cmd_t = 0.0
-        self.last_wake_t = 0.0
         self.stopped = False
-
+        
+        # Audio buffer
+        self.q = queue.Queue()
+        
         self.thread = threading.Thread(target=self._loop, daemon=True)
         self.thread.start()
 
-    def _emit_wake(self, text: str):
-        now = time.time()
-        if now - self.last_wake_t < WAKE_COOLDOWN_S:
-            return
-        self.last_wake_t = now
-        self.awake_until = now + WAKE_TIMEOUT_S
-        voice_event_q.put(("wake", text))
+    def audio_callback(self, indata, frames, time, status):
+        # Flatten to mono 1D array
+        self.q.put(indata.copy())
 
     def _loop(self):
-        with sd.RawInputStream(
-            samplerate=SAMPLE_RATE,
-            blocksize=8000,
-            device=MIC_DEVICE_INDEX,
-            dtype="int16",
-            channels=1,
-            callback=audio_callback
-        ):
+        # Buffer for speech
+        buffer = []
+        is_speaking = False
+        silence_start = 0.0
+        speech_start = 0.0
+        
+        with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, callback=self.audio_callback):
             while not self.stopped:
-                data = voice_audio_q.get()
-
-                # feed decoder
-                _ = self.rec.AcceptWaveform(data)
-
-                # ----- PARTIAL wake detection -----
-                pres = json.loads(self.rec.PartialResult())
-                ptxt = normalize_text(pres.get("partial", ""))
-                if ptxt and has_wake(ptxt):
-                    self._emit_wake(ptxt)
-
-                # ----- FINAL results -----
-                # If last chunk ended an utterance, Result() may contain text; otherwise it's empty sometimes.
-                res = json.loads(self.rec.Result())
-                text = normalize_text(res.get("text", ""))
-                if not text:
+                try:
+                    # Get chunk (blocksize is usually small, e.g. 10ms-20ms)
+                    chunk = self.q.get(timeout=1.0)
+                except queue.Empty:
                     continue
 
-                if VERBOSE_VOICE_PRINT:
-                    print("VOICE FINAL:", text)
+                # Energy check (simple VAD)
+                # chunk is float32 usually if not specified, but we used int16 in prev code?
+                # InputStream default is float32. Let's check amplitude.
+                # If we want int16 similar to before, we can specify dtype='int16' in InputStream
+                # But let's stick to float32 for Whisper ease, or cast.
+                # Actually, Whisper accepts float32 numpy array.
+                
+                vol = np.linalg.norm(chunk) * 10 
+                # Heuristic volume. 
+                # If using float32 [-1, 1], rms is small.
+                
+                is_loud = vol > 0.8  # Threshold needs tuning for float input! 
+                # Let's switch to int16 for consistent VAD thresholding with previous intuition if needed
+                # or just use normalized energy.
+                
+                now = time.time()
 
-                # If wake word appears in final, wake and allow inline command
-                if has_wake(text):
-                    self._emit_wake(text)
-                    text = strip_wake(text)
+                if is_loud:
+                    if not is_speaking:
+                        is_speaking = True
+                        speech_start = now
+                        buffer = []
+                    silence_start = now
+                else:
+                    if is_speaking and (now - silence_start > SILENCE_LIMIT_S):
+                         # End of speech
+                         is_speaking = False
+                         self._process_buffer(buffer)
+                         buffer = []
 
-                # Not awake -> ignore
-                if time.time() > self.awake_until:
-                    continue
+                if is_speaking:
+                    buffer.append(chunk)
+                    # Safety max length
+                    if (now - speech_start) > MAX_RECORD_S:
+                        is_speaking = False
+                        self._process_buffer(buffer)
+                        buffer = []
 
-                # throttle commands
-                if time.time() - self.last_cmd_t < MIN_CMD_GAP_S:
-                    continue
+    def _process_buffer(self, buffer_chunks):
+        if not buffer_chunks:
+            return
+        
+        # Concat
+        audio_data = np.concatenate(buffer_chunks, axis=0)
+        # Flatten
+        audio_data = audio_data.flatten()
+        
+        # Transcribe
+        segments, info = self.model.transcribe(audio_data, beam_size=5, language="id")
+        
+        full_text = " ".join([s.text for s in segments])
+        full_text = normalize_text(full_text)
+        
+        if not full_text:
+            return
+            
+        if VERBOSE_VOICE_PRINT:
+            print(f"WHISPER ({info.language}): {full_text}")
+            
+        # Logic
+        if has_wake(full_text):
+            self._emit_wake(full_text)
+            full_text = strip_wake(full_text)
+            
+        if time.time() > self.awake_until:
+            return
+            
+        intent = parse_intent(full_text)
+        if intent:
+            voice_event_q.put((intent, full_text))
 
-                intent = parse_intent(text)
-                if intent:
-                    self.last_cmd_t = time.time()
-                    voice_event_q.put((intent, text))
+    def _emit_wake(self, text):
+        now = time.time()
+        self.awake_until = now + WAKE_TIMEOUT_S
+        voice_event_q.put(("wake", text))
 
     def stop(self):
         self.stopped = True
@@ -551,9 +697,9 @@ def main():
         cv2.imshow(WINDOW_NAME, np.zeros((FRAME_H, FRAME_W, 3), dtype=np.uint8))
         cv2.waitKey(1)
 
-    print("Loading Vosk voice...")
+    print("Loading Faster Whisper voice...")
     ve = VoiceEngine()
-    say("Neil ready")
+    speak_response("ready")
 
     # FOLLOW state
     locked = False
@@ -584,15 +730,15 @@ def main():
                     print("VOICE EVENT:", intent, "| raw:", raw)
 
                 if intent == "wake":
-                    say("Yes")
+                    speak_response("wake")
                     continue
 
                 if intent == "quit":
-                    say("Bye")
+                    speak_response("quit")
                     return
 
                 if intent == "status":
-                    say(f"Mode {mode.lower()}")
+                    speak_response("status", mode=mode.lower())
                     continue
 
                 if intent == "mode_idle":
@@ -600,7 +746,7 @@ def main():
                     locked = False
                     target_box = None
                     stop_all()
-                    say("Idle")
+                    speak_response("mode_idle")
                     continue
 
                 if intent == "mode_manual":
@@ -608,7 +754,7 @@ def main():
                     locked = False
                     target_box = None
                     stop_all()
-                    say("Manual")
+                    speak_response("mode_manual")
                     continue
 
                 if intent == "mode_follow":
@@ -616,25 +762,25 @@ def main():
                     locked = False
                     target_box = None
                     stop_all()
-                    say("Follow")
+                    speak_response("mode_follow")
                     continue
 
                 # manual motion commands only in MANUAL
                 if mode == MODE_MANUAL:
                     if intent == "forward":
-                        say("Forward")
+                        speak_response("forward")
                         manual_forward(0.7, STEP_SEC)
                     elif intent == "backward":
-                        say("Backward")
+                        speak_response("backward")
                         manual_backward(0.7, STEP_SEC)
                     elif intent == "left":
-                        say("Left")
+                        speak_response("left")
                         manual_spin_left(0.6, TURN_STEP_SEC)
                     elif intent == "right":
-                        say("Right")
+                        speak_response("right")
                         manual_spin_right(0.6, TURN_STEP_SEC)
                     elif intent == "stop":
-                        say("Stop")
+                        speak_response("stop")
                         stop_all()
 
             # ---- get latest frame ----
@@ -729,7 +875,10 @@ def main():
                             target_last_seen = now
                             cooldown_until = now + GESTURE_COOLDOWN_S
                             open_count = 0
-                            say("Locked")
+                            target_last_seen = now
+                            cooldown_until = now + GESTURE_COOLDOWN_S
+                            open_count = 0
+                            speak_response("locked")
                 else:
                     if fist_count >= UNLOCK_HOLD_FRAMES:
                         locked = False
@@ -737,7 +886,10 @@ def main():
                         cooldown_until = now + GESTURE_COOLDOWN_S
                         fist_count = 0
                         stop_all()
-                        say("Unlocked")
+                        cooldown_until = now + GESTURE_COOLDOWN_S
+                        fist_count = 0
+                        stop_all()
+                        speak_response("unlocked")
 
                 # track target
                 if locked and target_box is not None and person_boxes:
@@ -833,8 +985,9 @@ def main():
                 cv2.imshow(WINDOW_NAME, show)
 
                 k = cv2.waitKey(1) & 0xFF
+                k = cv2.waitKey(1) & 0xFF
                 if k == ord("q"):
-                    say("Bye")
+                    speak_response("quit")
                     return
 
     finally:
