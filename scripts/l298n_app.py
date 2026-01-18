@@ -29,7 +29,7 @@ CAM_INDEX = 0
 FRAME_W, FRAME_H = 512, 288
 CAM_FPS = 60
 
-CONF_TH = 0.25
+CONF_TH = 0.15  # Very low threshold for debugging
 NMS_TH = 0.45
 PERSON_CLASS_ID = 0
 
@@ -367,10 +367,20 @@ def main():
                 outs = sess.run(out_names, {in_name: blob})
                 boxes, scores, cls = parse_output(outs, CONF_TH)
                 
+                # Debug: Show all detections
+                if frame_count % 30 == 0:
+                    print(f"DEBUG: Total detections: {len(boxes)} (all classes)")
+                    if len(boxes) > 0:
+                        print(f"  Classes detected: {set(cls.tolist())}")
+                        print(f"  Max score: {scores.max():.2f}")
+                
                 # Filter Persons
                 mask = (cls == PERSON_CLASS_ID)
                 boxes = boxes[mask]
                 scores = scores[mask]
+                
+                if frame_count % 30 == 0:
+                    print(f"  Persons filtered: {len(boxes)}")
 
                 # AUTO FOLLOW LOGIC
                 if len(boxes) > 0:
