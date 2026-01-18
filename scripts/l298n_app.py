@@ -420,28 +420,44 @@ def set_motor(motor: Motor, v: float):
 # =========================================================
 # KAWAII HDMI ROBOEYES-STYLE UI (with extra moods)
 # =========================================================
+# PATCH: smoother pupil movement (low-pass filter) + optional speed limit
+# Drop-in replacement for KawaiiEyesUI class in your current file.
+# (Everything else stays the same.)
+
 class KawaiiEyesUI:
     def __init__(self, w, h):
         self.w = int(w)
         self.h = int(h)
         self.state = "neutral"
-        self.target_x = 0.0
 
+        # --- target / smoothed gaze ---
+        self.target_x = 0.0          # raw input (-1..1)
+        self.gaze_x = 0.0            # smoothed
+        self.gaze_goal = 0.0         # desired gaze (tracking or idle)
+        self.gaze_v = 0.0            # (optional) velocity for smoothstep-ish feel
+
+        # smoothing knobs (tune)
+        self.GAZE_ALPHA = 0.12       # 0.05 smoother/slower, 0.20 faster
+        self.GAZE_MAX_STEP = 0.04    # max change per frame (limit jitter)
+
+        # blink / wink
         self.blink_t = 0.0
         self.next_blink = time.time() + random.uniform(2.0, 5.0)
-
         self.wink_t = 0.0
-        self.wink_side = None  # "L"/"R"/None
+        self.wink_side = None
 
+        # idle drift
         self.idle_x = 0.0
         self.idle_goal = 0.0
         self.next_idle_shift = time.time() + random.uniform(0.7, 1.7)
 
+        # anim phases
         self.phase = 0.0
         self.sparkle_phase = 0.0
         self.mouth_phase = 0.0
 
-        self.extra_mood = "none"  # "none", "love", "shock", "sleepy"
+        # extra mood
+        self.extra_mood = "none"
         self.next_mood = time.time() + random.uniform(4, 9)
 
     def set_state(self, s: str):
@@ -484,6 +500,25 @@ class KawaiiEyesUI:
             else:
                 self.extra_mood = "none"
 
+    def _smooth_gaze(self, desired: float):
+        """
+        Low-pass with step limit:
+          - desired: [-1..1]
+          - gaze_x changes smoothly even if detection jumps
+        """
+        desired = float(clamp(desired, -1.0, 1.0))
+
+        # standard low-pass
+        proposed = self.gaze_x + (desired - self.gaze_x) * self.GAZE_ALPHA
+
+        # step limit for sudden jumps (kills jitter)
+        step = proposed - self.gaze_x
+        if abs(step) > self.GAZE_MAX_STEP:
+            proposed = self.gaze_x + self.GAZE_MAX_STEP * sign(step)
+
+        self.gaze_x = float(clamp(proposed, -1.0, 1.0))
+        return self.gaze_x
+
     def draw(self, canvas, target_x=0.0, tracking=False):
         canvas[:] = (0, 0, 0)
         now = time.time()
@@ -494,10 +529,14 @@ class KawaiiEyesUI:
         self.sparkle_phase += 0.12
         self.mouth_phase += 0.10
 
+        # --- choose desired gaze ---
         if tracking:
-            self.target_x = float(clamp(target_x, -1.0, 1.0))
+            self.gaze_goal = float(clamp(target_x, -1.0, 1.0))
         else:
-            self.target_x = self._idle_target_x(now)
+            self.gaze_goal = self._idle_target_x(now)
+
+        # --- smooth it ---
+        gaze = self._smooth_gaze(self.gaze_goal)
 
         # palette (BGR)
         if self.state == "happy":
@@ -529,8 +568,9 @@ class KawaiiEyesUI:
         eye_w = 150
         eye_h = 185
 
-        pupil_dx = int(55 * self.target_x)
-        pupil_dy = int(12 * math.sin(self.phase * 0.7))
+        # <<< SMOOTH pupil dx uses `gaze` not raw target >>>
+        pupil_dx = int(55 * gaze)
+        pupil_dy = int(10 * math.sin(self.phase * 0.7))  # slightly smaller vertical wobble
 
         blink = self._blink_now(now)
         wink = self._wink_side_now(now)
@@ -550,7 +590,6 @@ class KawaiiEyesUI:
 
             # special pupils
             if self.extra_mood == "love":
-                # heart-ish pupil
                 cv2.circle(canvas, (px - 10, py), 18, (0, 0, 255), -1)
                 cv2.circle(canvas, (px + 10, py), 18, (0, 0, 255), -1)
                 cv2.ellipse(canvas, (px, py + 10), (26, 18), 0, 0, 180, (0, 0, 255), -1)
@@ -566,7 +605,6 @@ class KawaiiEyesUI:
             cv2.circle(canvas, (px - 14, py - 14), s1, (255, 255, 255), -1)
             cv2.circle(canvas, (px + 12, py - 20), s2, (255, 255, 255), -1)
 
-            # sleepy eyelid overlay
             if self.extra_mood == "sleepy":
                 overlay = canvas.copy()
                 cv2.ellipse(overlay, (cx, cy_ - 20), (eye_w, eye_h), 0, 0, 360, (0, 0, 0), -1)
@@ -582,7 +620,7 @@ class KawaiiEyesUI:
         else:
             draw_open(cx2, cy_eyes)
 
-        # blush overlay
+        # blush
         blush_alpha = 0.55 if self.state == "happy" else (0.25 if self.state == "neutral" else 0.18)
         overlay = canvas.copy()
         r = 38
@@ -590,7 +628,7 @@ class KawaiiEyesUI:
         cv2.circle(overlay, (cx2 - 135, cy_eyes + 95), r, blush, -1)
         cv2.addWeighted(overlay, blush_alpha, canvas, 1.0 - blush_alpha, 0, canvas)
 
-        # mouth changes with extra mood
+        # mouth
         mx = self.w // 2
         my = cy + 210 + bob
         if self.extra_mood == "shock":
@@ -604,10 +642,8 @@ class KawaiiEyesUI:
         else:
             cv2.circle(canvas, (mx, my), 6, mouth, -1)
 
-        # small status label
         label = "TRACKING!" if tracking else "IDLE..."
         cv2.putText(canvas, label, (20, self.h - 25), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (240, 240, 240), 2)
-
 
 # =========================================================
 # CAMERA THREAD
