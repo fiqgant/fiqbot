@@ -1,17 +1,3 @@
-# neo_follow_ui_piper_kawaii_full.py
-# - Kawaii HDMI RoboEyes-style UI (OpenCV fullscreen) -> NO TEXT OVERLAY (eyes + small camera only)
-# - Piper TTS via python -m piper, with QUEUE + CACHE (no cut, supports long speech)
-# - Audio playback prefers pw-play (PipeWire) then paplay then aplay
-# - Robust ONNX output parsing (supports (N,6) and Ultralytics (1,C,N)/(1,N,C))
-# - Auto-detect ONNX input size
-# - L298N motors via gpiozero + LGPIOFactory
-# - Camera PIP small bottom-right + boxes
-# - Random expressions + random quotes + random idle chatter
-#
-# Run:
-#   source ~/fiqbot/robot/bin/activate
-#   python neo_follow_ui_piper_kawaii_full.py
-
 import os
 os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
@@ -147,7 +133,7 @@ def play_wav(path: str) -> bool:
         if not _cmd_exists(cmd[0]):
             continue
         try:
-            subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).wait(timeout=60)
+            subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).wait(timeout=120)
             return True
         except Exception:
             continue
@@ -274,7 +260,7 @@ def _ensure_wav(text: str) -> str:
             p.stdin.close()
         except Exception:
             pass
-        p.wait(timeout=90)
+        p.wait(timeout=120)
     except Exception:
         return ""
 
@@ -409,7 +395,6 @@ class KawaiiEyesUI:
         self.h = int(h)
         self.state = "neutral"
 
-        # smoothed gaze
         self.gaze_x = 0.0
         self.gaze_goal = 0.0
         self.GAZE_ALPHA = 0.12
@@ -497,7 +482,6 @@ class KawaiiEyesUI:
 
         gaze = self._smooth_gaze(self.gaze_goal)
 
-        # palette (BGR)
         if self.state == "happy":
             eye_fill = (240, 250, 255)
             outline = (170, 220, 255)
@@ -578,9 +562,9 @@ class KawaiiEyesUI:
 
         blush_alpha = 0.55 if self.state == "happy" else (0.25 if self.state == "neutral" else 0.18)
         overlay = canvas.copy()
-        r = 38
-        cv2.circle(overlay, (cx1 + 135, cy_eyes + 95), r, blush, -1)
-        cv2.circle(overlay, (cx2 - 135, cy_eyes + 95), r, blush, -1)
+        rr = 38
+        cv2.circle(overlay, (cx1 + 135, cy_eyes + 95), rr, blush, -1)
+        cv2.circle(overlay, (cx2 - 135, cy_eyes + 95), rr, blush, -1)
         cv2.addWeighted(overlay, blush_alpha, canvas, 1.0 - blush_alpha, 0, canvas)
 
         mx = self.w // 2
@@ -669,17 +653,29 @@ def create_ort_session(path):
     return sess, in_name, out_names, img_size
 
 def letterbox(image, new_shape, color=(114, 114, 114)):
-    nh, nw = new_shape
+    """Correct + safe letterbox. new_shape=(H,W)."""
+    nh, nw = int(new_shape[0]), int(new_shape[1])
     h, w = image.shape[:2]
+    if h <= 0 or w <= 0:
+        canvas = np.full((nh, nw, 3), color, dtype=np.uint8)
+        return canvas, 1.0, 0, 0
+
     scale = min(nw / w, nh / h)
-    new_w, new_h = int(round(w * scale)), int(round(h * scale))
+    new_w = int(round(w * scale))
+    new_h = int(round(h * scale))
+
     resized = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
     canvas = np.full((nh, nw, 3), color, dtype=np.uint8)
+
     pad_w = (nw - new_w) // 2
     pad_h = (nh - new_h) // 2
-    canvas[pad_h:pad_h + new_h, pad_w:pad_w + new_h] = resized if new_h == resized.shape[0] else resized
-    # safer slice:
-    canvas[pad_h:pad_h + new_h, pad_w:pad_w + new_w] = resized
+
+    x1 = pad_w
+    y1 = pad_h
+    x2 = pad_w + new_w
+    y2 = pad_h + new_h
+
+    canvas[y1:y2, x1:x2] = resized
     return canvas, scale, pad_w, pad_h
 
 def to_blob(img):
@@ -710,6 +706,7 @@ def parse_output_any(outs, conf_th):
 
         boxes_xywh = out[:, 0:4].astype(np.float32)
         scores_all = out[:, 4:].astype(np.float32)
+
         cls = np.argmax(scores_all, axis=1).astype(np.int32)
         scores = scores_all[np.arange(scores_all.shape[0]), cls].astype(np.float32)
 
@@ -759,8 +756,6 @@ def main():
     tracking = False
 
     frame_id = 0
-    prev_inf = time.time()
-
     next_idle_t = time.time() + random.uniform(IDLE_CHATTER_MIN_S, IDLE_CHATTER_MAX_S)
 
     try:
@@ -821,8 +816,6 @@ def main():
                             y2 = clamp(y2, 0, h0 - 1)
 
                             person_boxes.append((float(x1), float(y1), float(x2), float(y2)))
-
-                prev_inf = now
 
             if person_boxes:
                 areas = [box_area_xyxy(b) for b in person_boxes]
@@ -898,7 +891,13 @@ def main():
                 y0 = max(0, min(UI_H - PIP_H, y0))
 
                 face_img[y0:y0 + PIP_H, x0:x0 + PIP_W] = pip_small
-                cv2.rectangle(face_img, (x0 - 2, y0 - 2), (x0 + PIP_W + 2, y0 + PIP_H + 2), (255, 255, 255), 2)
+                cv2.rectangle(
+                    face_img,
+                    (x0 - 2, y0 - 2),
+                    (x0 + PIP_W + 2, y0 + PIP_H + 2),
+                    (255, 255, 255),
+                    2,
+                )
 
                 cv2.imshow(WINDOW_NAME, face_img)
                 if (cv2.waitKey(1) & 0xFF) == ord("q"):
