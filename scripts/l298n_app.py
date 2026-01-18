@@ -43,7 +43,7 @@ SILENCE_LIMIT_S = 1.2  # Seconds of silence to consider "done speaking"
 MAX_RECORD_S = 10.0    # Max duration to record command
 
 TTS_ENABLE = True
-TTS_LANG = "id"  # Indonesian
+TTS_LANG = "en-us"  # English
 
 # ---------- Follow (YOLO ONNX) ----------
 ONNX_PATH = "yolo11n.onnx"
@@ -183,79 +183,78 @@ def say(text: str):
 
 NEO_RESPONSES = {
     "ready": [
-        "Sistem siap. Neo online.",
-        "Halo, Neo siap membantu.",
-        "Semua sistem aman. Menunggu perintah.",
-        "Neo aktif. Silakan."
+        "System initialized. Neo is online.",
+        "Hello there. Neo is at your service.",
+        "Systems nominal. Ready for commands.",
+        "Neo active. Awaiting input."
     ],
     "wake": [
-        "Ya? Saya mendengarkan.",
-        "Siap, katakan saja.",
-        "Ada yang bisa saya bantu?",
-        "Mendengarkan."
+        "Yes? I am listening.",
+        "Ready for command.",
+        "I'm here. What do you need?",
+        "Go ahead."
     ],
     "quit": [
-        "Mematikan sistem. Sampai jumpa!",
-        "Dah, saya istirahat dulu.",
-        "Sistem dimatikan. Dadah."
+        "Shutting down now. Goodbye!",
+        "Powering off. See you later.",
+        "Closing systems. Have a good day."
     ],
     "mode_idle": [
-        "Mode santai aktif.",
-        "Oke, saya diam dulu.",
-        "Standby mode on."
+        "Entering idle mode. Standing by.",
+        "Switching to idle. Systems resting.",
+        "I will wait here until further notice."
     ],
     "mode_manual": [
-        "Mode manual aktif. Kendali di tanganmu.",
-        "Oke, silakan kendalikan saya.",
-        "Siap menerima kendali manual."
+        "Manual control engaged. You have the con.",
+        "Switching to manual mode. Awaiting your inputs.",
+        "Manual override active."
     ],
     "mode_follow": [
-        "Siap mengikuti kamu.",
-        "Mode follow aktif. Ayo jalan.",
-        "Oke, jangan jalan cepat-cepat ya."
+        "Visual tracking engaged. I will follow you.",
+        "Follow mode activated. Lead the way.",
+        "Targeting systems active. I am right behind you."
     ],
     "locked": [
-        "Target terkunci.",
-        "Oke, saya lihat kamu.",
-        "Kunci target berhasil.",
-        "Dapat."
+        "Target locked. Tracking engaged.",
+        "I have you in my sights.",
+        "Lock on confirmed.",
+        "Target acquired."
     ],
     "unlocked": [
-        "Target hilang.",
-        "Yah, lepas.",
-        "Mencari target baru...",
-        "Lock lepas."
+        "Target lost. Scanning.",
+        "Lock disengaged. Where did you go?",
+        "Target released. Waiting for lock."
     ],
     "forward": [
-        "Maju.",
-        "Gas maju.",
-        "Oke maju."
+        "Moving forward.",
+        "Proceeding ahead.",
+        "Advancing."
     ],
     "backward": [
-        "Mundur.",
-        "Awas, mundur.",
-        "Mundur pelan-pelan."
+        "Backing up.",
+        "Reversing.",
+        "Moving backward."
     ],
     "left": [
-        "Belok kiri.",
-        "Kiri.",
-        "Putar kiri."
+        "Turning left.",
+        "Banking left.",
+        "Rotating port."
     ],
     "right": [
-        "Belok kanan.",
-        "Kanan.",
-        "Putar kanan."
+        "Turning right.",
+        "Banking right.",
+        "Rotating starboard."
     ],
     "stop": [
-        "Berhenti.",
-        "Stop.",
-        "Rem.",
-        "Oke stop."
+        "Stopping now.",
+        "Halt.",
+        "Full stop.",
+        "Braking."
     ],
     "status": [
-        "Sekarang mode {mode}.",
-        "Status: mode {mode}.",
-        "Lagi di mode {mode} nih."
+        "My current operating mode is {mode}.",
+        "Status report: currently in {mode} mode.",
+        "Systems are currently set to {mode}."
     ]
 }
 
@@ -544,21 +543,21 @@ def parse_intent(text: str):
         return "mode_idle"
 
     # stop
-    if "stop" in t or "berhenti" in t or "halt" in t or "diam" in t or "stop" in t:
+    if "stop" in t or "halt" in t:
         return "stop"
 
     # motion
-    if "maju" in t or "depan" in t or "forward" in t or "go" in t:
+    if "forward" in t or "go" in t or "ahead" in t:
         return "forward"
-    if "mundur" in t or "belakang" in t or "backward" in t or "back" in t:
+    if "backward" in t or "back" in t or "reverse" in t:
         return "backward"
-    if "kiri" in t or "left" in t:
+    if "left" in t:
         return "left"
-    if "kanan" in t or "right" in t:
+    if "right" in t:
         return "right"
 
     # status
-    if "status" in t or "kabar" in t or "mode" in t:
+    if "status" in t or "report" in t:
         return "status"
 
     return None
@@ -645,7 +644,7 @@ class VoiceEngine:
         audio_data = audio_data.flatten()
         
         # Transcribe
-        segments, info = self.model.transcribe(audio_data, beam_size=5, language="id")
+        segments, info = self.model.transcribe(audio_data, beam_size=5, language="en")
         
         full_text = " ".join([s.text for s in segments])
         full_text = normalize_text(full_text)
