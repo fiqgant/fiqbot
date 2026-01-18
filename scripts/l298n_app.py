@@ -23,7 +23,7 @@ TTS_LANG = "en-us"
 
 # ---------- Follow (YOLO ONNX) ----------
 ONNX_PATH = "yolo11n.onnx"
-YOLO_IMG_SIZE = 640  # User requested 640
+YOLO_IMG_SIZE = 320
 
 CAM_INDEX = 0
 FRAME_W, FRAME_H = 512, 288
@@ -325,7 +325,7 @@ def create_ort_session(path):
     sess = ort.InferenceSession(path, sess_options=so, providers=["CPUExecutionProvider"])
     return sess, sess.get_inputs()[0].name, [o.name for o in sess.get_outputs()]
 
-def letterbox(image, new_shape=(640, 640), color=(114, 114, 114)):
+def letterbox(image, new_shape=(320, 320), color=(114, 114, 114)):
     h, w = image.shape[:2]
     nh, nw = new_shape
     scale = min(nw / w, nh / h)
