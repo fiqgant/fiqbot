@@ -1,3 +1,18 @@
+# neo_follow_ui_piper_kawaii_full.py
+# - Kawaii HDMI RoboEyes-style UI (OpenCV fullscreen)
+# - Piper TTS via python -m piper, with QUEUE + CACHE (no cut, supports long speech)
+# - Audio playback prefers pw-play (PipeWire) then paplay then aplay
+# - Robust ONNX output parsing (supports (N,6) and Ultralytics (1,C,N)/(1,N,C))
+# - Auto-detect ONNX input size
+# - Debug overlay + periodic terminal prints
+# - L298N motors via gpiozero + LGPIOFactory
+# - Camera PIP + boxes
+# - NEW: random expressions + random quotes + random idle chatter
+#
+# Run:
+#   source ~/fiqbot/robot/bin/activate
+#   python neo_follow_ui_piper_kawaii_full.py
+
 import os
 os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
@@ -7,6 +22,8 @@ import threading
 import subprocess
 import random
 import math
+import hashlib
+import queue
 
 import cv2
 import numpy as np
@@ -19,22 +36,19 @@ from gpiozero.pins.lgpio import LGPIOFactory
 # CONFIG
 # =========================================================
 
-# ---------- TTS ----------
+# ---------- TTS (Piper) ----------
 TTS_ENABLE = True
-TTS_MIN_GAP = 2.0  # seconds between TTS (avoid spam)
-
-# Piper via module (because you run inside venv)
-PIPER_USE_MODULE = True
-PIPER_BIN = "python"  # used when PIPER_USE_MODULE=True: python -m piper
+TTS_MIN_GAP = 1.5           # smaller = more talkative, but still avoid spam
+TTS_MAX_CHARS = 220         # split long text into chunks (natural + safe)
+TTS_CACHE_DIR = "/tmp/neo_tts_cache"
 
 PIPER_MODEL = os.path.expanduser("~/voices/piper/en_US-lessac-medium.onnx")
-PIPER_CONFIG = os.path.expanduser("~/voices/piper/en_US-lessac-medium.onnx.json")  # optional but you have it
+PIPER_CONFIG = os.path.expanduser("~/voices/piper/en_US-lessac-medium.onnx.json")
 PIPER_SPEAKER = None
 
-PIPER_LENGTH_SCALE = 1.05
+PIPER_LENGTH_SCALE = 1.05   # >1 slower, <1 faster
 PIPER_NOISE_SCALE = 0.667
 PIPER_NOISE_W = 0.8
-PIPER_OUT_WAV = "/tmp/neo_tts.wav"
 
 # ---------- YOLO ONNX ----------
 ONNX_PATH = "yolo11n.onnx"
@@ -72,7 +86,7 @@ INVERT_TURN = False
 TARGET_LOST_GRACE = 1.5
 
 # ---------- Performance ----------
-INFER_EVERY_N_FRAMES = 1
+INFER_EVERY_N_FRAMES = 2    # lighter CPU -> TTS feels faster; set 1 if still OK
 
 # ---------- UI ----------
 SHOW_UI = True
@@ -84,6 +98,12 @@ FULLSCREEN = True
 # ---------- Debug ----------
 DEBUG_PRINT_EVERY = 30
 DRAW_ALL_PERSONS = True
+
+# ---------- Random personality ----------
+RANDOM_IDLE_CHATTER = True
+IDLE_CHATTER_MIN_S = 18
+IDLE_CHATTER_MAX_S = 45
+EXPRESSIONS_ENABLE = True
 
 # =========================================================
 
@@ -110,7 +130,7 @@ def box_area_xyxy(b):
 
 
 # =========================================================
-# AUDIO PLAYBACK (fix HDMI ALSA issues on Pi 5 by preferring PipeWire)
+# AUDIO PLAYBACK (prefer PipeWire on Pi 5 HDMI)
 # =========================================================
 def _cmd_exists(cmd0: str) -> bool:
     try:
@@ -120,7 +140,6 @@ def _cmd_exists(cmd0: str) -> bool:
         return False
 
 def play_wav(path: str) -> bool:
-    # Prefer PipeWire; fallback to PulseAudio; then ALSA default
     players = [
         ["pw-play", path],
         ["paplay", path],
@@ -130,7 +149,7 @@ def play_wav(path: str) -> bool:
         if not _cmd_exists(cmd[0]):
             continue
         try:
-            subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).wait(timeout=20)
+            subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).wait(timeout=60)
             return True
         except Exception:
             continue
@@ -138,24 +157,107 @@ def play_wav(path: str) -> bool:
 
 
 # =========================================================
-# PIPER TTS
+# PIPER TTS (QUEUE + CACHE)
 # =========================================================
+os.makedirs(TTS_CACHE_DIR, exist_ok=True)
+
+_tts_q = queue.Queue(maxsize=12)
+_tts_worker_started = False
 _last_tts_t = 0.0
 
-NEO_RESPONSES = {
-    "found": ["Hi hi! I see you!", "Target acquired!", "There you are!", "Yay, found you!"],
-    "lost":  ["Uh oh... where'd you go?", "I lost you...", "Searching...", "Scanning..."],
-    "idle":  ["I'm here!", "Standing by!", "Ready when you are!", "Idle mode... beep!"],
-    "quit":  ["Shutting down. Bye bye!", "Goodbye!", "Going offline!"]
+# --- Cute random quotes / phrases ---
+NEO_QUOTES = [
+    "Beep beep. I'm trying my best!",
+    "If lost, please reboot human.",
+    "I run on snacks... and electricity.",
+    "I see with my eyes. I follow with my heart.",
+    "Tiny robot, big dreams.",
+    "Hold still—I'm focusing!",
+    "I'm not nervous. You're nervous.",
+    "I have one job: follow politely.",
+    "If you smile, my motors smile too.",
+    "Soft turns only, okay?",
+]
+
+NEO_EXPRESSIONS = {
+    "giggle": [
+        "Hehe!", "Hihi!", "Ehehe!", "Tehehe!"
+    ],
+    "wow": [
+        "Whoa!", "Waaah!", "Wowza!", "Ohhh!"
+    ],
+    "curious": [
+        "Hmm?", "Ooh?", "What is that?", "Interesting..."
+    ],
+    "encourage": [
+        "You got this!", "Let's go!", "I'm with you!", "Okay okay!"
+    ],
+    "apologize": [
+        "Sorry sorry!", "Oops!", "My bad!", "I didn't mean to!"
+    ],
+    "robot": [
+        "Beep.", "Boop.", "Beep boop!", "Bweep!"
+    ]
 }
 
-def _piper_cmd():
-    if PIPER_USE_MODULE:
-        cmd = [PIPER_BIN, "-m", "piper"]
-    else:
-        cmd = ["piper"]
+NEO_RESPONSES = {
+    "found": [
+        "Hi hi! I see you clearly now. I will follow you gently. Please move slowly so I can keep you in my camera view.",
+        "Target acquired! If you step to the left, I will turn left. If you step to the right, I will turn right. If you get too close, I will slow down."
+    ],
+    "lost": [
+        "Uh oh, I lost you. Please come back in front of me so I can see you again.",
+        "Where did you go? I'm scanning. Try standing in the center of my camera view."
+    ],
+    "idle": [
+        "Standing by! Wave at me, and I will start following you.",
+        "I'm ready. Please step in front of the camera so I can lock on to you."
+    ],
+    "quit": ["Shutting down. Goodbye!"]
+}
 
-    cmd += ["--model", PIPER_MODEL, "--output_file", PIPER_OUT_WAV]
+def _hash_key(s: str) -> str:
+    return hashlib.sha1(s.encode("utf-8", errors="ignore")).hexdigest()
+
+def _split_text(text: str, max_chars: int):
+    text = " ".join((text or "").strip().split())
+    if not text:
+        return []
+
+    parts = []
+    buf = ""
+    for ch in text:
+        buf += ch
+        if ch in ".!?":
+            parts.append(buf.strip())
+            buf = ""
+    if buf.strip():
+        parts.append(buf.strip())
+
+    merged = []
+    cur = ""
+    for p in parts:
+        if not cur:
+            cur = p
+        elif len(cur) + 1 + len(p) <= max_chars:
+            cur = cur + " " + p
+        else:
+            merged.append(cur)
+            cur = p
+    if cur:
+        merged.append(cur)
+
+    final = []
+    for m in merged:
+        if len(m) <= max_chars:
+            final.append(m)
+        else:
+            for i in range(0, len(m), max_chars):
+                final.append(m[i:i+max_chars])
+    return final
+
+def _piper_cmd(out_path: str):
+    cmd = ["python", "-m", "piper", "--model", PIPER_MODEL, "--output_file", out_path]
     if PIPER_CONFIG and os.path.isfile(PIPER_CONFIG):
         cmd += ["--config", PIPER_CONFIG]
     cmd += ["--length_scale", str(PIPER_LENGTH_SCALE)]
@@ -165,16 +267,17 @@ def _piper_cmd():
         cmd += ["--speaker", str(int(PIPER_SPEAKER))]
     return cmd
 
-def _say_worker(text: str):
-    try:
-        text = (text or "").strip()
-        if not text:
-            return
-        if not os.path.isfile(PIPER_MODEL):
-            return
+def _ensure_wav(text: str) -> str:
+    key = _hash_key(
+        f"{PIPER_MODEL}|{PIPER_CONFIG}|{PIPER_LENGTH_SCALE}|{PIPER_NOISE_SCALE}|{PIPER_NOISE_W}|{PIPER_SPEAKER}|{text}"
+    )
+    out_path = os.path.join(TTS_CACHE_DIR, f"{key}.wav")
+    if os.path.isfile(out_path) and os.path.getsize(out_path) > 2000:
+        return out_path
 
+    try:
         p = subprocess.Popen(
-            _piper_cmd(),
+            _piper_cmd(out_path),
             stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -186,38 +289,110 @@ def _say_worker(text: str):
             p.stdin.close()
         except Exception:
             pass
-
-        try:
-            p.wait(timeout=25)
-        except Exception:
-            try:
-                p.kill()
-            except Exception:
-                pass
-            return
-
-        if os.path.isfile(PIPER_OUT_WAV):
-            play_wav(PIPER_OUT_WAV)
-
+        p.wait(timeout=90)
     except Exception:
-        pass
+        return ""
+
+    if os.path.isfile(out_path) and os.path.getsize(out_path) > 2000:
+        return out_path
+    return ""
+
+def _tts_worker_loop():
+    while True:
+        item = _tts_q.get()
+        if item is None:
+            break
+        text = item
+        try:
+            chunks = _split_text(text, TTS_MAX_CHARS)
+            for c in chunks:
+                wav = _ensure_wav(c)
+                if wav:
+                    play_wav(wav)
+        except Exception:
+            pass
+        _tts_q.task_done()
+
+def _start_tts_worker_once():
+    global _tts_worker_started
+    if _tts_worker_started:
+        return
+    _tts_worker_started = True
+    threading.Thread(target=_tts_worker_loop, daemon=True).start()
+
+def _decorate(text: str) -> str:
+    if not EXPRESSIONS_ENABLE:
+        return text
+    # add short prefix/suffix sometimes (keeps it cute but not too spammy)
+    prefix = ""
+    suffix = ""
+    r = random.random()
+    if r < 0.25:
+        prefix = random.choice(NEO_EXPRESSIONS["robot"]) + " "
+    elif r < 0.45:
+        prefix = random.choice(NEO_EXPRESSIONS["giggle"]) + " "
+    elif r < 0.60:
+        prefix = random.choice(NEO_EXPRESSIONS["curious"]) + " "
+    elif r < 0.70:
+        prefix = random.choice(NEO_EXPRESSIONS["wow"]) + " "
+
+    if random.random() < 0.25:
+        suffix = " " + random.choice(NEO_QUOTES)
+
+    return (prefix + text + suffix).strip()
 
 def say(text: str):
     global _last_tts_t
     if not TTS_ENABLE:
         return
+    if not os.path.isfile(PIPER_MODEL):
+        return
+
     text = (text or "").strip()
     if not text:
         return
+
     now = time.time()
     if now - _last_tts_t < TTS_MIN_GAP:
         return
     _last_tts_t = now
-    threading.Thread(target=_say_worker, args=(text,), daemon=True).start()
+
+    _start_tts_worker_once()
+
+    text = _decorate(text)
+
+    try:
+        _tts_q.put_nowait(text)
+    except queue.Full:
+        # drop if too chatty, avoid blocking robot loop
+        pass
 
 def speak_response(key: str):
     if key in NEO_RESPONSES:
         say(random.choice(NEO_RESPONSES[key]))
+
+def maybe_idle_chatter(tracking: bool, next_idle_t: float) -> float:
+    if not RANDOM_IDLE_CHATTER:
+        return next_idle_t
+    now = time.time()
+    if tracking:
+        return now + random.uniform(IDLE_CHATTER_MIN_S, IDLE_CHATTER_MAX_S)
+    if now >= next_idle_t and random.random() < 0.75:
+        # mix of short expression + quote + small instruction
+        idle_lines = [
+            "I'm here. Wave at me!",
+            "If you want me to follow you, stand in the middle.",
+            "I can see best when the light is nice and bright.",
+            "Try moving slowly. I get dizzy easily.",
+            "I am scanning for a human-shaped friend.",
+        ]
+        line = random.choice(idle_lines)
+        # sometimes just a quote
+        if random.random() < 0.35:
+            line = random.choice(NEO_QUOTES)
+        say(line)
+        return now + random.uniform(IDLE_CHATTER_MIN_S, IDLE_CHATTER_MAX_S)
+    return next_idle_t
 
 
 # =========================================================
@@ -243,7 +418,7 @@ def set_motor(motor: Motor, v: float):
 
 
 # =========================================================
-# KAWAII HDMI ROBOEYES-STYLE UI
+# KAWAII HDMI ROBOEYES-STYLE UI (with extra moods)
 # =========================================================
 class KawaiiEyesUI:
     def __init__(self, w, h):
@@ -265,6 +440,9 @@ class KawaiiEyesUI:
         self.phase = 0.0
         self.sparkle_phase = 0.0
         self.mouth_phase = 0.0
+
+        self.extra_mood = "none"  # "none", "love", "shock", "sleepy"
+        self.next_mood = time.time() + random.uniform(4, 9)
 
     def set_state(self, s: str):
         s = s or "neutral"
@@ -295,9 +473,22 @@ class KawaiiEyesUI:
         self.idle_x += (self.idle_goal - self.idle_x) * 0.06
         return float(clamp(self.idle_x, -1.0, 1.0))
 
+    def _update_extra_mood(self, tracking: bool):
+        now = time.time()
+        if now > self.next_mood:
+            self.next_mood = now + random.uniform(5, 12)
+            if tracking and random.random() < 0.55:
+                self.extra_mood = random.choice(["love", "shock", "none"])
+            elif not tracking and random.random() < 0.55:
+                self.extra_mood = random.choice(["sleepy", "none", "none"])
+            else:
+                self.extra_mood = "none"
+
     def draw(self, canvas, target_x=0.0, tracking=False):
         canvas[:] = (0, 0, 0)
         now = time.time()
+
+        self._update_extra_mood(tracking)
 
         self.phase += 0.07
         self.sparkle_phase += 0.12
@@ -357,12 +548,29 @@ class KawaiiEyesUI:
             px = cx + pupil_dx
             py = cy_ + pupil_dy
 
-            cv2.circle(canvas, (px, py), 38, pupil, -1)
+            # special pupils
+            if self.extra_mood == "love":
+                # heart-ish pupil
+                cv2.circle(canvas, (px - 10, py), 18, (0, 0, 255), -1)
+                cv2.circle(canvas, (px + 10, py), 18, (0, 0, 255), -1)
+                cv2.ellipse(canvas, (px, py + 10), (26, 18), 0, 0, 180, (0, 0, 255), -1)
+            elif self.extra_mood == "shock":
+                cv2.circle(canvas, (px, py), 44, pupil, -1)
+                cv2.circle(canvas, (px, py), 18, (255, 255, 255), -1)
+            else:
+                cv2.circle(canvas, (px, py), 38, pupil, -1)
 
+            # highlights
             s1 = int(10 + 4 * (0.5 + 0.5 * math.sin(self.sparkle_phase)))
             s2 = int(6 + 3 * (0.5 + 0.5 * math.cos(self.sparkle_phase)))
             cv2.circle(canvas, (px - 14, py - 14), s1, (255, 255, 255), -1)
             cv2.circle(canvas, (px + 12, py - 20), s2, (255, 255, 255), -1)
+
+            # sleepy eyelid overlay
+            if self.extra_mood == "sleepy":
+                overlay = canvas.copy()
+                cv2.ellipse(overlay, (cx, cy_ - 20), (eye_w, eye_h), 0, 0, 360, (0, 0, 0), -1)
+                cv2.addWeighted(overlay, 0.35, canvas, 0.65, 0, canvas)
 
         if left_closed:
             draw_closed(cx1, cy_eyes)
@@ -382,10 +590,12 @@ class KawaiiEyesUI:
         cv2.circle(overlay, (cx2 - 135, cy_eyes + 95), r, blush, -1)
         cv2.addWeighted(overlay, blush_alpha, canvas, 1.0 - blush_alpha, 0, canvas)
 
-        # mouth
+        # mouth changes with extra mood
         mx = self.w // 2
         my = cy + 210 + bob
-        if self.state == "happy":
+        if self.extra_mood == "shock":
+            cv2.circle(canvas, (mx, my), 10, mouth, 3)
+        elif self.state == "happy":
             w_amp = int(10 + 4 * (0.5 + 0.5 * math.sin(self.mouth_phase)))
             cv2.ellipse(canvas, (mx - 18, my), (16, w_amp), 0, 10, 170, mouth, 4)
             cv2.ellipse(canvas, (mx + 18, my), (16, w_amp), 0, 10, 170, mouth, 4)
@@ -393,6 +603,10 @@ class KawaiiEyesUI:
             cv2.ellipse(canvas, (mx, my + 10), (26, 14), 0, 200, 340, mouth, 4)
         else:
             cv2.circle(canvas, (mx, my), 6, mouth, -1)
+
+        # small status label
+        label = "TRACKING!" if tracking else "IDLE..."
+        cv2.putText(canvas, label, (20, self.h - 25), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (240, 240, 240), 2)
 
 
 # =========================================================
@@ -466,7 +680,6 @@ def create_ort_session(path):
     print("ONNX outputs:", [(o.name, o.shape, o.type) for o in sess.get_outputs()])
     return sess, in_name, out_names, img_size
 
-
 def letterbox(image, new_shape, color=(114, 114, 114)):
     nh, nw = new_shape
     h, w = image.shape[:2]
@@ -479,13 +692,11 @@ def letterbox(image, new_shape, color=(114, 114, 114)):
     canvas[pad_h:pad_h + new_h, pad_w:pad_w + new_w] = resized
     return canvas, scale, pad_w, pad_h
 
-
 def to_blob(img):
     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     img = img.astype(np.float32) / 255.0
     img = np.transpose(img, (2, 0, 1))
     return np.expand_dims(img, 0)
-
 
 def parse_output_any(outs, conf_th):
     out = np.array(outs[0])
@@ -541,8 +752,15 @@ def main():
             print("[WARN] Piper model not found:", PIPER_MODEL)
         elif not os.path.isfile(PIPER_CONFIG):
             print("[WARN] Piper config json not found (still OK):", PIPER_CONFIG)
+
         if not (_cmd_exists("pw-play") or _cmd_exists("paplay") or _cmd_exists("aplay")):
-            print("[WARN] No audio player found. Install pipewire-audio or alsa-utils.")
+            print("[WARN] No audio player found. Install pipewire-audio/pipewire-pulse or alsa-utils.")
+
+    # start TTS worker
+    global _tts_worker_started
+    if not _tts_worker_started:
+        _tts_worker_started = True
+        threading.Thread(target=_tts_worker_loop, daemon=True).start()
 
     cam = CamThread(CAM_INDEX, FRAME_W, FRAME_H, CAM_FPS)
     sess, in_name, out_names, yolo_img = create_ort_session(ONNX_PATH)
@@ -568,6 +786,8 @@ def main():
     infer_fps = 0.0
     prev_ui = time.time()
     prev_inf = time.time()
+
+    next_idle_t = time.time() + random.uniform(IDLE_CHATTER_MIN_S, IDLE_CHATTER_MAX_S)
 
     try:
         while True:
@@ -675,6 +895,8 @@ def main():
                     speak_response("found")
                 ui.set_state("happy")
 
+                next_idle_t = now + random.uniform(IDLE_CHATTER_MIN_S, IDLE_CHATTER_MAX_S)
+
                 if frame_id % DEBUG_PRINT_EVERY == 0:
                     print(f"[DBG] persons={len(person_boxes)} best_area_norm={area_norm:.3f} err_x={err_x:.2f} base={base:.2f} turn={turn:.2f}")
 
@@ -684,9 +906,11 @@ def main():
                     stop_all()
                     speak_response("lost")
                     ui.set_state("sad")
+                    next_idle_t = now + random.uniform(IDLE_CHATTER_MIN_S, IDLE_CHATTER_MAX_S)
                 elif not tracking:
                     stop_all()
                     ui.set_state("neutral")
+                    next_idle_t = maybe_idle_chatter(tracking=False, next_idle_t=next_idle_t)
 
             ui.draw(face_img, target_dir, tracking=tracking)
 
@@ -713,7 +937,11 @@ def main():
 
                 status = "TRACK" if tracking else "IDLE"
                 cv2.putText(face_img, f"{status} | UI {ui_fps:.1f} | INFER {infer_fps:.1f} | CONF {CONF_TH}",
-                            (10, UI_H - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (245, 245, 245), 2)
+                            (10, UI_H - 60), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (245, 245, 245), 2)
+
+                if EXPRESSIONS_ENABLE:
+                    cv2.putText(face_img, f"mood: {ui.state} | extra: {ui.extra_mood}",
+                                (10, UI_H - 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (245, 245, 245), 2)
 
                 cv2.imshow(WINDOW_NAME, face_img)
                 if (cv2.waitKey(1) & 0xFF) == ord("q"):
