@@ -1,131 +1,162 @@
-# FiqBot - Advanced Raspberry Pi 5 Robot Control 🤖
+# FiqBot - Autonomous Raspberry Pi 5 Robot Platform
 
-![Python](https://img.shields.io/badge/Python-3.9%2B-blue?logo=python&logoColor=white)
-![Platform](https://img.shields.io/badge/Platform-Raspberry%20Pi%205-C51A4A?logo=raspberrypi&logoColor=white)
-![License](https://img.shields.io/badge/License-MIT-green)
-![Status](https://img.shields.io/badge/Status-Active-success)
+![Python Badge](https://img.shields.io/badge/Python-3.9%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)
+![Raspberry Pi Badge](https://img.shields.io/badge/Raspberry%20Pi-5-C51A4A?style=for-the-badge&logo=raspberrypi&logoColor=white)
+![License Badge](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)
+![Status Badge](https://img.shields.io/badge/Status-Active-success?style=for-the-badge)
 
-**FiqBot** is a modular, high-performance robot control system optimized for the **Raspberry Pi 5**. It integrates real-time camera streaming, web-based remote control, and AI-powered computer vision for person following and gesture recognition.
+**FiqBot** is a high-performance, modular robotics framework designed specifically for the **Raspberry Pi 5**. It leverages modern libraries like `gpiozero` with `lgpio` backend for efficient hardware control and integrates advanced computer vision models (YOLOv11 via ONNX, MediaPipe) for autonomous navigation and interaction.
 
----
-
-## 📋 Table of Contents
-- [Features](#-features)
-- [Hardware Requirements](#-hardware-requirements)
-- [Wiring & Pinout](#-wiring--pinout)
-- [Installation](#-installation)
-- [Usage Guide](#-usage-guide)
-- [Project Structure](#-project-structure)
-- [Troubleshooting](#-troubleshooting)
+This project is built to be a robust starting point for anyone looking to explore edge AI robotics, offering immediate capabilities for person following, gesture recognition, and low-latency remote control.
 
 ---
 
-## ✨ Features
+## 📑 Table of Contents
 
-- **🚀 Remote Control**: Low-latency terminal-based driving (WASD).
-- **📹 Live Streaming**: Web interface with high-speed MJPEG streaming via `ustreamer`.
-- **🧠 AI Person Following**: Autonomous tracking using **YOLOv11** (ONNX).
-- **✋ Gesture Lock**: Secure target locking using Hand Gestures (Open Hand / Fist) via MediaPipe.
-- **⚡ Optimized for Pi 5**: Utilizes `lgpio` and `gpiozero` for modern GPIO handling.
+- [✨ Key Features](#-key-features)
+- [🛠 Hardware Architecture](#-hardware-architecture)
+- [🔌 Wiring & Pinout](#-wiring--pinout)
+- [🚀 Installation Guide](#-installation-guide)
+- [💻 Usage & Modules](#-usage--modules)
+- [🧠 AI Capabilities](#-ai-capabilities)
+- [📂 Project Structure](#-project-structure)
+- [🔧 Troubleshooting](#-troubleshooting)
+- [📜 License](#-license)
 
 ---
 
-## 🛠 Hardware Requirements
+## ✨ Key Features
 
-| Component | Recommendation |
-|-----------|----------------|
-| **SBC** | Raspberry Pi 5 (Preferred) / Pi 4 |
-| **Driver** | L298N Motor Driver Module |
-| **Motors** | 2x or 4x DC Gear Motors (TT Motors) |
-| **Camera** | USB Webcam / Pi Camera Module |
-| **Power** | 2S Li-ion / 7.2V-12V External Battery |
+- **⚡ Raspberry Pi 5 Optimized**: Built from the ground up to use the new RP1 chip features via `lgpio`, avoiding legacy GPIO library issues.
+- **👁️ Computer Vision Pipeline**:
+  - **Person Following**: Real-time tracking using **YOLOv11n** (Nano) optimized for edge devices.
+  - **Gesture Lock**: Secure target acquisition using Hand Gestures (Open Hand to lock, Fist to unlock) powered by MediaPipe.
+- **🎮 Low-Latency Control**:
+  - **Web Interface**: Smartphone-friendly controls with live MJPEG streaming via `ustreamer`.
+  - **Terminal Remote**: Direct SSH keyboard control for debugging and testing.
+- **🏗️ Robust Architecture**: Threaded camera handling, modular script design, and crash-resilient motor safety features (watchdogs).
+
+---
+
+## 🛠 Hardware Architecture
+
+The system assumes a 2WD or 4WD differential drive chassis configuration.
+
+| Component | Specification / Recommendation |
+| :--- | :--- |
+| **Compute Module** | **Raspberry Pi 5** (4GB or 8GB recommended) |
+| **Motor Driver** | **L298N** Dual H-Bridge Module |
+| **Motors** | 4x TT Gear Motors (Yellow) or High-torque DC Motors |
+| **Power Source** | 2S Li-ion (7.4V) or 3S Li-ion (11.1V) with buck converter for Pi |
+| **Camera** | USB Webcam (Logitech C920/C270) or Pi Camera Module 3 |
+| **Chassis** | Generic 4WD Robot Car Chassis Kit |
 
 ---
 
 ## 🔌 Wiring & Pinout
 
-The system is pre-configured for **Raspberry Pi 5** using BCM numbering.
+Physical connections should be made according to the diagram below. The code uses **BCM numbering**.
 
-| L298N Pin | Raspberry Pi (BCM) | Description |
-|:---:|:---:|:---|
-| **IN1** | `GPIO 18` | Left Motor Forward |
-| **IN2** | `GPIO 19` | Left Motor Backward |
-| **IN3** | `GPIO 20` | Right Motor Forward |
-| **IN4** | `GPIO 21` | Right Motor Backward |
-| **ENA** | `GPIO 12` | Left Motor Speed (PWM) |
-| **ENB** | `GPIO 13` | Right Motor Speed (PWM) |
-| **GND** | `GND` | Common Ground (Critical!) |
+> **⚠️ CRITICAL WARNING**: Always connect the **GND** of the L298N driver to a ground pin on the Raspberry Pi. Failure to do so will result in erratic motor behavior or hardware damage.
 
-> **⚠️ Important**: Ensure the L298N ground is connected to the Raspberry Pi ground to establish a common reference.
+### Pin Mapping Table
 
+| L298N Interface | Raspberry Pi Pin (BCM) | Function |
+| :---: | :---: | :--- |
+| **IN1** | `GPIO 18` | Left Motors Forward |
+| **IN2** | `GPIO 19` | Left Motors Backward |
+| **IN3** | `GPIO 20` | Right Motors Forward |
+| **IN4** | `GPIO 21` | Right Motors Backward |
+| **ENA** | `GPIO 12` | Left Speed Control (PWM) |
+| **ENB** | `GPIO 13` | Right Speed Control (PWM) |
+
+### Wiring Diagram
 ![Wiring Diagram](assets/wiring_bb.png)
 
 ---
 
-## 📥 Installation
+## 🚀 Installation Guide
 
-### 1. System Dependencies
-Update your system and install system-level dependencies for OpenCV.
+### 1. System Preparation
+Ensure your Raspberry Pi 5 runs the latest Raspberry Pi OS (Bookworm).
 ```bash
-sudo apt update
-sudo apt install -y python3-opencv libopencv-dev
+sudo apt update && sudo apt upgrade -y
+sudo apt install -y python3-opencv libopencv-dev git
 ```
 
-### 2. Python Environment
-Clone the repository and install the required Python packages (including `gpiozero`, `numpy`, `opencv`, `mediapipe`, etc.).
-
+### 2. Clone Repository
 ```bash
 git clone https://github.com/fiqgant/fiqbot.git
 cd fiqbot
+```
+
+### 3. Install Python Dependencies
+It is recommended to run this within a virtual environment (optional but best practice).
+```bash
+# Create virtual environment (optional)
+python3 -m venv venv
+source venv/bin/activate
+
+# Install requirements
 pip install -r requirements.txt
 ```
 
-### 3. Setup Camera Stream (Optional)
-For the web control feature, install `ustreamer` for low-latency streaming.
+### 4. Setup Camera Streaming (Optional)
+For the web-based remote control, install `ustreamer` for superior MJPEG performance compared to Python-based streamers.
 ```bash
 sudo apt install ustreamer
-# Run ustreamer in the background on port 8080
+# Start the stream service (background)
 ustreamer --host=0.0.0.0 --port=8080 -r 640x480 -f 30 &
 ```
 
+### 5. AI Model Setup
+The system requires the **YOLOv11 Nano (ONNX)** model.
+1. Download `yolo11n.onnx`.
+2. Place it in the **root** folder `fiqbot/` OR inside `fiqbot/scripts/`.
+3. The code handles detection automatically in both locations.
+
 ---
 
-## 🎮 Usage Guide
+## 💻 Usage & Modules
 
-### 1. Verification Test
-Run a quick diagnostic to check motor rotation and wiring.
+All execution scripts are located in the `scripts/` directory.
+
+### 🧪 Hardware Diagnostics
+Run this first to verify your wiring. Motors should spin forward, then backward.
 ```bash
 python scripts/l298n_test.py
 ```
 
-### 2. Terminal Remote
-Control the robot directly from your SSH terminal using keyboard inputs.
+### 🎮 Terminal Remote Control
+Control the robot directly via SSH. Ideally used for latency testing.
 ```bash
 python scripts/l298n_control.py
 ```
-| Key | Action |
-|:---:|:---|
-| **W** | Move Forward |
-| **S** | Move Backward |
-| **A** | Turn Left |
-| **D** | Turn Right |
-| **Space** | Emergency Stop |
+> **Controls**: `W`, `A`, `S`, `D` to move. `SPACE` to stop. `Q` to quit.
 
-### 3. Web Control Center
-Launch the web interface to control the bot from a smartphone or browser.
+### 🌐 Web Command Center
+Launches a Flask server to control the robot from any browser on the same network.
 ```bash
 python scripts/l298n_cam_stream.py
 ```
-> **Access**: `http://<your-pi-ip>:8000`
+> **Access**: Open `http://<your-pi-ip>:8000` on your phone or PC.
 
-### 4. AI Follower (YOLO)
-Activate autonomous person tracking.
+---
+
+## 🧠 AI Capabilities
+
+### 👤 Autonomous Person Follower
+Uses YOLOv11 to detect persons and adjust motor speed/direction to keep the subject centered and at a specific distance.
 ```bash
 python scripts/l298n_yolo.py
 ```
 
-### 5. Smart Lock (Gesture Control)
-Look for an **Open Hand** to lock onto a target, and a **Fist** to unlock/stop.
+### 🔒 Gesture & Lock Tracking
+An advanced mode that waits for a specific hand gesture to "lock" onto a target.
+- **Gesture**: Show an **OPEN HAND** ✋ to lock onto the nearest person.
+- **Tracking**: The robot follows *only* that specific person using IoU tracking.
+- **Unlock**: Show a **FIST** ✊ to unlock and stop.
+
 ```bash
 python scripts/l298n_lock.py
 ```
@@ -134,34 +165,50 @@ python scripts/l298n_lock.py
 
 ## 📂 Project Structure
 
+```plaintext
 fiqbot/
-├── scripts/              # Python source code
-│   ├── l298n_yolo.py     # AI Person Following
-│   ├── l298n_lock.py     # AI Gesture Lock
-│   ├── ...               # Other scripts
-├── assets/               # Diagrams & images
+├── assets/               # Wiring diagrams, images, and Fritzing files
 │   ├── wiring_bb.png
 │   └── wiring.fzz
+├── scripts/              # Core Logic / Source Code
+│   ├── l298n_cam_stream.py    # Web interface backend
+│   ├── l298n_control.py       # SSH remote control
+│   ├── l298n_lock.py          # Gesture + Tracking logic
+│   ├── l298n_test.py          # Motor diagnostic tool
+│   └── l298n_yolo.py          # Standard Person Following
+├── README.md             # Project Documentation
 ├── LICENSE               # MIT License
-├── requirements.txt      # Dependencies
-└── README.md             # Documentation
+└── requirements.txt      # Python package requirements
 ```
 
 ---
 
-## ❓ Troubleshooting
+## 🔧 Troubleshooting
 
-- **GPIO errors?**
-  - Ensure you are using `lgpio` on Raspberry Pi 5. Run `rpi-update` if needed.
-- **Model not found?**
-  - The scripts look for `yolo11n.onnx` in the `scripts/` folder OR the **project root**. Ensure it exists in one of those locations.
+### Common Issues
+
+| Issue | Possible Cause | Solution |
+| :--- | :--- | :--- |
+| **Motors do not move** | Low Battery | Ensure battery is charged (>7V). |
+| | No Common Ground | **Connect L298N GND to Pi GND.** |
+| **"GPIO Error"** | Wrong Pin Factory | Ensure `lgpio` is installed on Pi 5. |
+| **Model Not Found** | Missing ONNX file | Place `yolo11n.onnx` in `scripts/` or root. |
+| **Camera Error** | Wrong Index | Edit `CAM_INDEX` in script (try 0, 1, or -1). |
+
+### Debugging
+If you encounter permission errors accessing GPIO, ensure your user is in the `gpio` group:
+```bash
+sudo usermod -a -G gpio $USER
+```
+Reboot after applying this change.
 
 ---
 
 ## 📜 License
 
-This project is licensed under the **MIT License**. See the [LICENSE](LICENSE) file for details.
+This project is open-source and licensed under the **MIT License**.
+See the [LICENSE](LICENSE) file for more details.
 
 ---
 
-Made with ❤️ by **Fiq**
+Copyright © 2026 **Fiq**. All rights reserved.
