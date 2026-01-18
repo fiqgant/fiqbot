@@ -178,12 +178,23 @@ class FaceUI:
         self.state = "neutral"  # neutral, happy, sad
         self.blink_timer = 0.0
         self.next_blink = time.time() + random.uniform(2, 5)
+        self.target_x = 0.0  # -1 to 1, target direction for pupil tracking
+        self.breath_phase = 0.0  # For breathing animation
 
-    def draw(self, canvas):
+    def draw(self, canvas, target_x=0.0):
+        """
+        Draw expressive eyes on canvas.
+        target_x: -1 (left) to 1 (right), direction where target is located
+        """
         # Background black
         canvas[:] = (0, 0, 0)
         
         now = time.time()
+        self.target_x = target_x
+        
+        # Breathing animation (subtle scale pulsing)
+        self.breath_phase = (now * 0.8) % (2 * np.pi)
+        breath_scale = 1.0 + 0.05 * np.sin(self.breath_phase)
         
         # Blink Logic
         is_blink = False
@@ -193,47 +204,71 @@ class FaceUI:
                 self.next_blink = now + random.uniform(2, 8)
             
             if now - self.blink_timer < 0.15:
-                is_blink = True # closed eyes
+                is_blink = True
 
         # Colors
-        color = (255, 255, 255) # White
-        if self.state == "happy":
-            color = (0, 255, 255) # Yellow/Cyan
-        elif self.state == "sad":
-            color = (0, 0, 255) # Red
-
-        # Draw Eyes
-        cy = self.h // 2
-        cx1 = self.w // 3
-        cx2 = (self.w * 2) // 3
+        eye_color = (255, 255, 255)  # White
+        pupil_color = (50, 50, 50)  # Dark gray
         
-        eye_w = 60
-        eye_h = 80
+        if self.state == "happy":
+            eye_color = (100, 255, 255)  # Cyan
+            pupil_color = (0, 200, 200)
+        elif self.state == "sad":
+            eye_color = (100, 100, 255)  # Blueish
+            pupil_color = (0, 0, 150)
+
+        # Eye positions - MORE SPACED OUT
+        cy = self.h // 2
+        cx1 = self.w // 4  # Left eye (1/4 from left)
+        cx2 = (self.w * 3) // 4  # Right eye (3/4 from left)
+        
+        # Eye dimensions
+        base_eye_w = int(50 * breath_scale)
+        base_eye_h = int(70 * breath_scale)
         
         if is_blink:
-             cv2.line(canvas, (cx1 - 50, cy), (cx1 + 50, cy), color, 4)
-             cv2.line(canvas, (cx2 - 50, cy), (cx2 + 50, cy), color, 4)
-             return
+            # Closed eyes (horizontal lines)
+            cv2.line(canvas, (cx1 - 50, cy), (cx1 + 50, cy), eye_color, 5)
+            cv2.line(canvas, (cx2 - 50, cy), (cx2 + 50, cy), eye_color, 5)
+            return
 
+        # State-specific rendering
         if self.state == "neutral":
-            cv2.ellipse(canvas, (cx1, cy), (eye_w, eye_h), 0, 0, 360, color, -1)
-            cv2.ellipse(canvas, (cx2, cy), (eye_w, eye_h), 0, 0, 360, color, -1)
+            # Normal elliptical eyes with pupils
+            cv2.ellipse(canvas, (cx1, cy), (base_eye_w, base_eye_h), 0, 0, 360, eye_color, -1)
+            cv2.ellipse(canvas, (cx2, cy), (base_eye_w, base_eye_h), 0, 0, 360, eye_color, -1)
+            
+            # Pupils that follow target
+            pupil_offset_x = int(15 * self.target_x)
+            pupil_r = 15
+            cv2.circle(canvas, (cx1 + pupil_offset_x, cy), pupil_r, pupil_color, -1)
+            cv2.circle(canvas, (cx2 + pupil_offset_x, cy), pupil_r, pupil_color, -1)
             
         elif self.state == "happy":
-            # ^ ^ shape (inverted parabola approx)
-            cv2.ellipse(canvas, (cx1, cy), (eye_w, eye_h), 0, 180, 360, color, -1)
-            cv2.ellipse(canvas, (cx2, cy), (eye_w, eye_h), 0, 180, 360, color, -1)
+            # Wide open happy eyes (arcs pointing up)
+            eye_w = int(60 * breath_scale)
+            eye_h = int(50 * breath_scale)
+            
+            # Draw upper arc (happy eyes)
+            cv2.ellipse(canvas, (cx1, cy + 10), (eye_w, eye_h), 0, 180, 360, eye_color, -1)
+            cv2.ellipse(canvas, (cx2, cy + 10), (eye_w, eye_h), 0, 180, 360, eye_color, -1)
+            
+            # Pupils looking slightly up
+            pupil_offset_x = int(12 * self.target_x)
+            cv2.circle(canvas, (cx1 + pupil_offset_x, cy - 5), 12, pupil_color, -1)
+            cv2.circle(canvas, (cx2 + pupil_offset_x, cy - 5), 12, pupil_color, -1)
             
         elif self.state == "sad":
-            # T_T shape (flat top, or small circles)
-            cv2.circle(canvas, (cx1, cy), 30, color, -1)
-            cv2.circle(canvas, (cx2, cy), 30, color, -1)
+            # Searching/sad eyes with horizontal movement
+            offset = int(25 * np.sin(now * 4))  # Faster scanning
             
-            # Searching animation?
-            offset = int(30 * np.sin(now * 5))
-            canvas[:] = (0,0,0)
-            cv2.circle(canvas, (cx1 + offset, cy), 35, color, -1)
-            cv2.circle(canvas, (cx2 + offset, cy), 35, color, -1)
+            # Draw droopy eyes
+            cv2.ellipse(canvas, (cx1, cy - 10), (45, 40), 0, 0, 180, eye_color, -1)
+            cv2.ellipse(canvas, (cx2, cy - 10), (45, 40), 0, 0, 180, eye_color, -1)
+            
+            # Scanning pupils
+            cv2.circle(canvas, (cx1 + offset, cy), 12, pupil_color, -1)
+            cv2.circle(canvas, (cx2 + offset, cy), 12, pupil_color, -1)
 
     def set_state(self, s):
         self.state = s
@@ -337,9 +372,9 @@ def main():
         cv2.resizeWindow(WINDOW_NAME, 800, 480) 
         cv2.moveWindow(WINDOW_NAME, 0, 0)
 
-    # Face UI
-    face = FaceUI(FRAME_H, FRAME_H) # Changed to square for face
-    face_img = np.zeros((FRAME_H, FRAME_H, 3), dtype=np.uint8) # Changed to square for face
+    # Face UI (full width for proper eye spacing)
+    face = FaceUI(FRAME_W, FRAME_H)
+    face_img = np.zeros((FRAME_H, FRAME_W, 3), dtype=np.uint8)
 
     last_seen = 0.0
     target_locked = False
@@ -353,8 +388,8 @@ def main():
         while True:
             frame_count += 1
             
-            # 1. Update Face (Independent of camera sometimes)
-            face.draw(face_img)
+            # Track target direction for eyes
+            target_direction = 0.0  # -1 to 1
 
             # 2. Camera & Inference
             ok, frame = cam.read()
@@ -408,6 +443,8 @@ def main():
                     
                     # Motion Control
                     err_x = (cx_l - (w0 * 0.5)) / (w0 * 0.5)
+                    target_direction = err_x  # Pass to eyes for pupil tracking
+                    
                     # Approx area norm
                     area_norm = areas[best_idx] / (scale * scale) / (w0 * h0)
                     err_a = (TARGET_AREA - area_norm)
@@ -439,6 +476,9 @@ def main():
                     else:
                         face.set_state("neutral")
                         stop_all()
+            
+            # 1. Update Face with target direction
+            face.draw(face_img, target_direction)
             
             # Show UI
             if SHOW_UI:
