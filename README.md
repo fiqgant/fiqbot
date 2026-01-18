@@ -58,6 +58,8 @@ The system is pre-configured for **Raspberry Pi 5** using BCM numbering.
 
 > **⚠️ Important**: Ensure the L298N ground is connected to the Raspberry Pi ground to establish a common reference.
 
+![Wiring Diagram](assets/wiring_bb.png)
+
 ---
 
 ## 📥 Installation
@@ -93,13 +95,13 @@ ustreamer --host=0.0.0.0 --port=8080 -r 640x480 -f 30 &
 ### 1. Verification Test
 Run a quick diagnostic to check motor rotation and wiring.
 ```bash
-python l298n_test.py
+python scripts/l298n_test.py
 ```
 
 ### 2. Terminal Remote
 Control the robot directly from your SSH terminal using keyboard inputs.
 ```bash
-python l298n_control.py
+python scripts/l298n_control.py
 ```
 | Key | Action |
 |:---:|:---|
@@ -112,20 +114,20 @@ python l298n_control.py
 ### 3. Web Control Center
 Launch the web interface to control the bot from a smartphone or browser.
 ```bash
-python l298n_cam_stream.py
+python scripts/l298n_cam_stream.py
 ```
 > **Access**: `http://<your-pi-ip>:8000`
 
 ### 4. AI Follower (YOLO)
 Activate autonomous person tracking.
 ```bash
-python l298n_yolo.py
+python scripts/l298n_yolo.py
 ```
 
 ### 5. Smart Lock (Gesture Control)
 Look for an **Open Hand** to lock onto a target, and a **Fist** to unlock/stop.
 ```bash
-python l298n_lock.py
+python scripts/l298n_lock.py
 ```
 
 ---
@@ -134,13 +136,17 @@ python l298n_lock.py
 
 ```plaintext
 fiqbot/
-├── l298n_cam_stream.py   # Web control server with camera feed
-├── l298n_control.py      # Terminal-based remote control
-├── l298n_lock.py         # Gesture-based target locking AI
-├── l298n_yolo.py         # Basic person following AI
-├── l298n_test.py         # Hardware diagnostic script
-├── requirements.txt      # Python dependencies
-└── README.md             # Documentation
+├── scripts/
+│   ├── l298n_cam_stream.py   # Web control server with camera feed
+│   ├── l298n_control.py      # Terminal-based remote control
+│   ├── l298n_lock.py         # Gesture-based target locking AI
+│   ├── l298n_yolo.py         # Basic person following AI
+│   └── l298n_test.py         # Hardware diagnostic script
+├── assets/
+│   ├── wiring_bb.png         # Wiring diagram
+│   └── wiring.fzz            # Fritzing file
+├── requirements.txt          # Python dependencies
+└── README.md                 # Documentation
 ```
 
 ---
