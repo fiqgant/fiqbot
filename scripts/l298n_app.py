@@ -40,6 +40,7 @@ TTS_LANG = "en-us"             # espeak-ng voice; try "en", "en-us". ("id" if in
 
 # ---------- Follow (YOLO ONNX) ----------
 ONNX_PATH = "yolo11n.onnx"
+YOLO_IMG_SIZE = 160  # Override model size for speed (160, 192, 224, 256, 320)
 
 CAM_INDEX = 0
 FRAME_W, FRAME_H = 512, 288
@@ -372,12 +373,16 @@ def create_ort_session(path: str):
 
     # Auto-detect fixed input size if present: [1,3,H,W]
     shp = sess.get_inputs()[0].shape
-    img_size = 320
+    
+    # Use config size by default
+    img_size = YOLO_IMG_SIZE 
+    
+    # Optional: logic to warn if model is fixed but we force different size
     if isinstance(shp, list) and len(shp) == 4:
         h = shp[2]
-        w = shp[3]
-        if isinstance(h, int) and isinstance(w, int) and h == w:
-            img_size = int(h)
+        if isinstance(h, int) and h != YOLO_IMG_SIZE:
+            print(f"WARNING: Model expects input {h}x{h}, but formatting to {YOLO_IMG_SIZE}x{YOLO_IMG_SIZE}.")
+            print("If it crashes, set YOLO_IMG_SIZE to", h)
 
     return sess, in_name, out_names, img_size
 
@@ -647,7 +652,7 @@ def main():
 
     cam = CamThread(CAM_INDEX, FRAME_W, FRAME_H, CAM_FPS)
     sess, in_name, out_names, img_size = create_ort_session(ONNX_PATH)
-    print("ONNX loaded. input IMG_SIZE =", img_size)
+    print(f"ONNX loaded. Input size forced to: {img_size}x{img_size}")
 
     if SHOW_UI:
         cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
