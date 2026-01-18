@@ -23,7 +23,7 @@ TTS_LANG = "en-us"
 
 # ---------- Follow (YOLO ONNX) ----------
 ONNX_PATH = "yolo11n.onnx"
-YOLO_IMG_SIZE = 160  # Fixed by model constraint
+YOLO_IMG_SIZE = 224  # User requested 224
 
 CAM_INDEX = 0
 FRAME_W, FRAME_H = 512, 288
