@@ -7,7 +7,7 @@
 
 **FiqBot** is a high-performance, modular robotics framework designed specifically for the **Raspberry Pi 5**. It leverages modern libraries like `gpiozero` with `lgpio` backend for efficient hardware control and integrates advanced computer vision models (YOLOv11 via ONNX, MediaPipe) for autonomous navigation and interaction.
 
-This project is built to be a robust starting point for anyone looking to explore edge AI robotics, offering immediate capabilities for person following, gesture recognition, and low-latency remote control.
+This project is built to be a robust starting point for anyone looking to explore edge AI robotics, offering immediate capabilities for person following, gesture recognition, expressive robot UI, text-to-speech interaction, and low-latency remote control.
 
 ---
 
@@ -31,6 +31,12 @@ This project is built to be a robust starting point for anyone looking to explor
 - **👁️ Computer Vision Pipeline**:
   - **Person Following**: Real-time tracking using **YOLOv11n** (Nano) optimized for edge devices.
   - **Gesture Lock**: Secure target acquisition using Hand Gestures (Open Hand to lock, Fist to unlock) powered by MediaPipe.
+- **🎭 Expressive Robot UI**:
+  - **Kawaii Digital Eyes**: Smooth, animated digital eyes that react to the robot's state with blinking, gaze tracking, and mood expressions.
+  - **Full-screen HDMI Output**: Premium display output with picture-in-picture camera feed.
+- **🔊 Text-to-Speech (TTS)**:
+  - **Reactive Personality**: Voice responses using Piper TTS when acquiring/losing targets.
+  - **Idle Chatter**: Random conversation snippets when waiting for targets.
 - **🎮 Low-Latency Control**:
   - **Web Interface**: Smartphone-friendly controls with live MJPEG streaming via `ustreamer`.
   - **Terminal Remote**: Direct SSH keyboard control for debugging and testing.
@@ -45,10 +51,12 @@ The system assumes a 2WD or 4WD differential drive chassis configuration.
 | Component | Specification / Recommendation |
 | :--- | :--- |
 | **Compute Module** | **Raspberry Pi 5** (4GB or 8GB recommended) |
-| **Motor Driver** | **L298N** Dual H-Bridge Module |
+| **Motor Driver** | **L298N** Dual H-Bridge Module (or BTS7960 for high-current) |
 | **Motors** | 4x TT Gear Motors (Yellow) or High-torque DC Motors |
 | **Power Source** | 2S Li-ion (7.4V) or 3S Li-ion (11.1V) with buck converter for Pi |
 | **Camera** | USB Webcam (Logitech C920/C270) or Pi Camera Module 3 |
+| **Display** | HDMI Monitor or Portable Display (for Kawaii Eyes UI) |
+| **Audio** | USB Speaker or HDMI Audio Output (for TTS) |
 | **Chassis** | Generic 4WD Robot Car Chassis Kit |
 
 ---
@@ -115,6 +123,16 @@ The system requires the **YOLOv11 Nano (ONNX)** model.
 2. Place it in the **root** folder `fiqbot/` OR inside `fiqbot/scripts/`.
 3. The code handles detection automatically in both locations.
 
+### 6. TTS Setup (Optional)
+For text-to-speech functionality in `l298n_app.py`:
+```bash
+# Install Piper TTS
+pip install piper-tts
+
+# Download a voice model (examples)
+# The script will use pw-play (PipeWire) or aplay for audio playback
+```
+
 ---
 
 ## 💻 Usage & Modules
@@ -128,7 +146,7 @@ python scripts/l298n_test.py
 ```
 
 ### 🎮 Terminal Remote Control
-Control the robot directly via SSH. Ideally used for latency testing.
+Control the robot directly via SSH. Ideal for latency testing.
 ```bash
 python scripts/l298n_control.py
 ```
@@ -161,24 +179,52 @@ An advanced mode that waits for a specific hand gesture to "lock" onto a target.
 python scripts/l298n_lock.py
 ```
 
+### 🤖 Full AI Robot with Expressive UI (NEO Mode)
+The flagship experience combining all features into an interactive, expressive robot companion.
+
+**Features:**
+- **Kawaii Digital Eyes**: Animated eyes that blink, track targets, and express emotions
+- **Text-to-Speech**: Voice responses when acquiring/losing targets with personality
+- **Idle Chatter**: Random conversation when no target is detected
+- **Picture-in-Picture**: Live camera feed overlaid on the UI
+- **Autonomous Following**: Real-time YOLO-based person tracking
+
+```bash
+python scripts/l298n_app.py
+```
+
+> **Display**: Outputs to HDMI in fullscreen mode. Press `Q` or `ESC` to quit.
+
+**Configuration Options** (edit at top of script):
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `SHOW_UI` | `True` | Enable/disable the Kawaii Eyes display |
+| `FULLSCREEN` | `True` | Fullscreen HDMI output |
+| `UI_W, UI_H` | `1280, 720` | Display resolution |
+| `EXPRESSIONS_ENABLE` | `True` | Enable TTS and personality |
+
 ---
 
 ## 📂 Project Structure
 
 ```plaintext
 fiqbot/
-├── assets/               # Wiring diagrams, images, and Fritzing files
-│   ├── wiring_l298n.png
-│   └── wiring_l298n.fzz
-├── scripts/              # Core Logic / Source Code
-│   ├── l298n_cam_stream.py    # Web interface backend
-│   ├── l298n_control.py       # SSH remote control
-│   ├── l298n_lock.py          # Gesture + Tracking logic
-│   ├── l298n_test.py          # Motor diagnostic tool
-│   └── l298n_yolo.py          # Standard Person Following
-├── README.md             # Project Documentation
-├── LICENSE               # MIT License
-└── requirements.txt      # Python package requirements
+├── assets/                    # Wiring diagrams and Fritzing files
+│   ├── wiring_l298n.png       # L298N wiring diagram (PNG)
+│   ├── wiring_l298n.fzz       # L298N Fritzing source file
+│   └── wiring_bts7960.fzz     # BTS7960 Fritzing source file
+├── scripts/                   # Core Logic / Source Code
+│   ├── l298n_app.py           # 🤖 Full AI Robot with Kawaii Eyes & TTS
+│   ├── l298n_cam_stream.py    # 🌐 Web interface backend
+│   ├── l298n_control.py       # 🎮 SSH terminal remote control
+│   ├── l298n_lock.py          # 🔒 Gesture + Lock tracking logic
+│   ├── l298n_test.py          # 🧪 Motor diagnostic tool
+│   └── l298n_yolo.py          # 👤 Standard Person Following
+├── .gitignore                 # Git ignored files
+├── LICENSE                    # MIT License
+├── README.md                  # Project Documentation
+├── requirements.txt           # Python package requirements
+└── wiring.fzz                 # Main wiring Fritzing file
 ```
 
 ---
@@ -194,6 +240,8 @@ fiqbot/
 | **"GPIO Error"** | Wrong Pin Factory | Ensure `lgpio` is installed on Pi 5. |
 | **Model Not Found** | Missing ONNX file | Place `yolo11n.onnx` in `scripts/` or root. |
 | **Camera Error** | Wrong Index | Edit `CAM_INDEX` in script (try 0, 1, or -1). |
+| **No Audio/TTS** | Missing audio setup | Install PipeWire or ensure `aplay` works. |
+| **Eyes UI not showing** | Display not connected | Connect HDMI display or set `SHOW_UI=False`. |
 
 ### Debugging
 If you encounter permission errors accessing GPIO, ensure your user is in the `gpio` group:
@@ -211,4 +259,4 @@ See the [LICENSE](LICENSE) file for more details.
 
 ---
 
-Copyright © 2026 **Fiq**. All rights reserved.
+**Copyright © 2026 Fiq. All rights reserved.**
