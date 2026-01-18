@@ -1,6 +1,3 @@
-# neo_follow_ui_piper_kawaii.py
-# HDMI kawaii RoboEyes-style UI + Piper TTS + your existing YOLO ONNX follow core
-
 import os
 os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
@@ -22,21 +19,22 @@ from gpiozero.pins.lgpio import LGPIOFactory
 # CONFIG
 # =========================================================
 
-# ---------- Piper TTS ----------
+# ---------- TTS ----------
 TTS_ENABLE = True
 TTS_MIN_GAP = 2.0  # seconds between TTS (avoid spam)
 
-PIPER_BIN = "piper"  # or "/usr/local/bin/piper"
-PIPER_MODEL = os.path.expanduser("~/voices/piper/en_US-lessac-medium.onnx")
-PIPER_CONFIG = os.path.expanduser("~/voices/piper/en_US-lessac-medium.onnx.json")
-PIPER_SPEAKER = None  # int for multi-speaker models, else None
+# Piper via module (because you run inside venv)
+PIPER_USE_MODULE = True
+PIPER_BIN = "python"  # used when PIPER_USE_MODULE=True: python -m piper
 
-PIPER_LENGTH_SCALE = 1.05   # >1 slower, <1 faster
+PIPER_MODEL = os.path.expanduser("~/voices/piper/en_US-lessac-medium.onnx")
+PIPER_CONFIG = os.path.expanduser("~/voices/piper/en_US-lessac-medium.onnx.json")  # optional but you have it
+PIPER_SPEAKER = None
+
+PIPER_LENGTH_SCALE = 1.05
 PIPER_NOISE_SCALE = 0.667
 PIPER_NOISE_W = 0.8
-
 PIPER_OUT_WAV = "/tmp/neo_tts.wav"
-AUDIO_PLAYER = "aplay"  # "aplay" (alsa-utils) or "paplay"
 
 # ---------- YOLO ONNX ----------
 ONNX_PATH = "yolo11n.onnx"
@@ -45,7 +43,7 @@ CAM_INDEX = 0
 FRAME_W, FRAME_H = 640, 360
 CAM_FPS = 60
 
-CONF_TH = 0.15       # debug low, later raise 0.25-0.35
+CONF_TH = 0.15
 NMS_TH = 0.45
 PERSON_CLASS_ID = 0
 
@@ -69,19 +67,19 @@ AREA_DEADBAND = 0.02
 X_DEADBAND = 0.05
 TURN_LIMIT = 0.80
 TURN_MIN = 0.20
-INVERT_TURN = False  # if turning reversed -> True
+INVERT_TURN = False
 
 TARGET_LOST_GRACE = 1.5
 
 # ---------- Performance ----------
-INFER_EVERY_N_FRAMES = 1  # set 2 if heavy
+INFER_EVERY_N_FRAMES = 1
 
 # ---------- UI ----------
 SHOW_UI = True
 WINDOW_NAME = "Neo Robot"
 UI_W, UI_H = 1280, 720
 PIP_W, PIP_H = 420, 236
-FULLSCREEN = True  # set False if you don't want fullscreen
+FULLSCREEN = True
 
 # ---------- Debug ----------
 DEBUG_PRINT_EVERY = 30
@@ -96,10 +94,8 @@ DRAW_ALL_PERSONS = True
 def clamp(x, lo, hi):
     return lo if x < lo else hi if x > hi else x
 
-
 def sign(x):
     return 1.0 if x > 0 else -1.0 if x < 0 else 0.0
-
 
 def apply_min(v: float) -> float:
     if abs(v) < 0.01:
@@ -108,10 +104,37 @@ def apply_min(v: float) -> float:
         return MIN_MOVE if v > 0 else -MIN_MOVE
     return v
 
-
 def box_area_xyxy(b):
     x1, y1, x2, y2 = b
     return max(0.0, (x2 - x1)) * max(0.0, (y2 - y1))
+
+
+# =========================================================
+# AUDIO PLAYBACK (fix HDMI ALSA issues on Pi 5 by preferring PipeWire)
+# =========================================================
+def _cmd_exists(cmd0: str) -> bool:
+    try:
+        r = subprocess.run([cmd0, "--help"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+def play_wav(path: str) -> bool:
+    # Prefer PipeWire; fallback to PulseAudio; then ALSA default
+    players = [
+        ["pw-play", path],
+        ["paplay", path],
+        ["aplay", "-D", "default", path],
+    ]
+    for cmd in players:
+        if not _cmd_exists(cmd[0]):
+            continue
+        try:
+            subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).wait(timeout=20)
+            return True
+        except Exception:
+            continue
+    return False
 
 
 # =========================================================
@@ -126,23 +149,18 @@ NEO_RESPONSES = {
     "quit":  ["Shutting down. Bye bye!", "Goodbye!", "Going offline!"]
 }
 
-def _have_piper():
-    try:
-        return (subprocess.call([PIPER_BIN, "--help"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0)
-    except Exception:
-        return False
-
 def _piper_cmd():
-    cmd = [
-        PIPER_BIN,
-        "--model", PIPER_MODEL,
-        "--output_file", PIPER_OUT_WAV,
-        "--length_scale", str(PIPER_LENGTH_SCALE),
-        "--noise_scale", str(PIPER_NOISE_SCALE),
-        "--noise_w", str(PIPER_NOISE_W),
-    ]
+    if PIPER_USE_MODULE:
+        cmd = [PIPER_BIN, "-m", "piper"]
+    else:
+        cmd = ["piper"]
+
+    cmd += ["--model", PIPER_MODEL, "--output_file", PIPER_OUT_WAV]
     if PIPER_CONFIG and os.path.isfile(PIPER_CONFIG):
         cmd += ["--config", PIPER_CONFIG]
+    cmd += ["--length_scale", str(PIPER_LENGTH_SCALE)]
+    cmd += ["--noise_scale", str(PIPER_NOISE_SCALE)]
+    cmd += ["--noise_w", str(PIPER_NOISE_W)]
     if PIPER_SPEAKER is not None:
         cmd += ["--speaker", str(int(PIPER_SPEAKER))]
     return cmd
@@ -151,8 +169,6 @@ def _say_worker(text: str):
     try:
         text = (text or "").strip()
         if not text:
-            return
-        if not _have_piper():
             return
         if not os.path.isfile(PIPER_MODEL):
             return
@@ -170,8 +186,9 @@ def _say_worker(text: str):
             p.stdin.close()
         except Exception:
             pass
+
         try:
-            p.wait(timeout=20)
+            p.wait(timeout=25)
         except Exception:
             try:
                 p.kill()
@@ -180,11 +197,7 @@ def _say_worker(text: str):
             return
 
         if os.path.isfile(PIPER_OUT_WAV):
-            subprocess.Popen(
-                [AUDIO_PLAYER, PIPER_OUT_WAV],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            ).wait()
+            play_wav(PIPER_OUT_WAV)
 
     except Exception:
         pass
@@ -233,51 +246,30 @@ def set_motor(motor: Motor, v: float):
 # KAWAII HDMI ROBOEYES-STYLE UI
 # =========================================================
 class KawaiiEyesUI:
-    """
-    Mood mapping:
-      - neutral: idle
-      - happy: tracking
-      - sad: lost
-      Extra vibes:
-      - curious: idle scanning glance
-      - scared: optional (not used by default)
-      - frozen: optional (not used by default)
-    """
     def __init__(self, w, h):
         self.w = int(w)
         self.h = int(h)
-
         self.state = "neutral"
         self.target_x = 0.0
 
-        # blink / wink
         self.blink_t = 0.0
         self.next_blink = time.time() + random.uniform(2.0, 5.0)
+
         self.wink_t = 0.0
         self.wink_side = None  # "L"/"R"/None
 
-        # idle eye drift + saccades
         self.idle_x = 0.0
         self.idle_goal = 0.0
         self.next_idle_shift = time.time() + random.uniform(0.7, 1.7)
 
-        # cute bobbing
         self.phase = 0.0
         self.sparkle_phase = 0.0
-
-        # mouth anim
         self.mouth_phase = 0.0
-
-        # last state for transitions
-        self.last_state_change = time.time()
 
     def set_state(self, s: str):
         s = s or "neutral"
         if s != self.state:
             self.state = s
-            self.last_state_change = time.time()
-
-            # tiny wink when become happy
             if s == "happy" and random.random() < 0.35:
                 self.wink_side = "L" if random.random() < 0.5 else "R"
                 self.wink_t = time.time()
@@ -288,7 +280,7 @@ class KawaiiEyesUI:
             self.next_blink = now + random.uniform(2.2, 6.0)
         return (now - self.blink_t) < 0.12
 
-    def _wink_side(self, now):
+    def _wink_side_now(self, now):
         if self.wink_side is None:
             return None
         if (now - self.wink_t) < 0.18:
@@ -297,12 +289,9 @@ class KawaiiEyesUI:
         return None
 
     def _idle_target_x(self, now):
-        # When not tracking, do cute scanning movement
         if now > self.next_idle_shift:
             self.next_idle_shift = now + random.uniform(0.8, 2.0)
             self.idle_goal = random.uniform(-0.8, 0.8)
-
-        # smooth toward goal
         self.idle_x += (self.idle_goal - self.idle_x) * 0.06
         return float(clamp(self.idle_x, -1.0, 1.0))
 
@@ -314,7 +303,6 @@ class KawaiiEyesUI:
         self.sparkle_phase += 0.12
         self.mouth_phase += 0.10
 
-        # choose x source
         if tracking:
             self.target_x = float(clamp(target_x, -1.0, 1.0))
         else:
@@ -340,7 +328,6 @@ class KawaiiEyesUI:
             blush = (90, 80, 140)
             mouth = (190, 190, 190)
 
-        # geometry
         cx1 = self.w // 4
         cx2 = (self.w * 3) // 4
         cy = self.h // 2
@@ -351,12 +338,11 @@ class KawaiiEyesUI:
         eye_w = 150
         eye_h = 185
 
-        # pupil tracking
         pupil_dx = int(55 * self.target_x)
         pupil_dy = int(12 * math.sin(self.phase * 0.7))
 
         blink = self._blink_now(now)
-        wink = self._wink_side(now)
+        wink = self._wink_side_now(now)
         left_closed = blink or (wink == "L")
         right_closed = blink or (wink == "R")
 
@@ -371,21 +357,12 @@ class KawaiiEyesUI:
             px = cx + pupil_dx
             py = cy_ + pupil_dy
 
-            # iris/pupil
             cv2.circle(canvas, (px, py), 38, pupil, -1)
 
-            # sparkly highlights
             s1 = int(10 + 4 * (0.5 + 0.5 * math.sin(self.sparkle_phase)))
             s2 = int(6 + 3 * (0.5 + 0.5 * math.cos(self.sparkle_phase)))
             cv2.circle(canvas, (px - 14, py - 14), s1, (255, 255, 255), -1)
             cv2.circle(canvas, (px + 12, py - 20), s2, (255, 255, 255), -1)
-
-            # tiny star sparkle sometimes (very cute)
-            if self.state == "happy" and random.random() < 0.02:
-                sx = px + random.randint(-50, 50)
-                sy = py + random.randint(-50, 50)
-                cv2.drawMarker(canvas, (sx, sy), (255, 255, 255),
-                               markerType=cv2.MARKER_STAR, markerSize=14, thickness=2)
 
         if left_closed:
             draw_closed(cx1, cy_eyes)
@@ -405,25 +382,17 @@ class KawaiiEyesUI:
         cv2.circle(overlay, (cx2 - 135, cy_eyes + 95), r, blush, -1)
         cv2.addWeighted(overlay, blush_alpha, canvas, 1.0 - blush_alpha, 0, canvas)
 
-        # mouth (kawaii)
+        # mouth
         mx = self.w // 2
         my = cy + 210 + bob
-
         if self.state == "happy":
-            # smiling "w" mouth
             w_amp = int(10 + 4 * (0.5 + 0.5 * math.sin(self.mouth_phase)))
             cv2.ellipse(canvas, (mx - 18, my), (16, w_amp), 0, 10, 170, mouth, 4)
             cv2.ellipse(canvas, (mx + 18, my), (16, w_amp), 0, 10, 170, mouth, 4)
         elif self.state == "sad":
-            # small sad curve
             cv2.ellipse(canvas, (mx, my + 10), (26, 14), 0, 200, 340, mouth, 4)
         else:
-            # tiny dot mouth
             cv2.circle(canvas, (mx, my), 6, mouth, -1)
-
-        # subtitle cute status
-        label = "TRACKING!" if tracking else "IDLE..."
-        cv2.putText(canvas, label, (20, self.h - 25), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (240, 240, 240), 2)
 
 
 # =========================================================
@@ -485,7 +454,7 @@ def create_ort_session(path):
     in_name = sess.get_inputs()[0].name
     out_names = [o.name for o in sess.get_outputs()]
 
-    shp = sess.get_inputs()[0].shape  # [1,3,H,W]
+    shp = sess.get_inputs()[0].shape
     img_size = 320
     if isinstance(shp, list) and len(shp) == 4:
         h = shp[2]
@@ -514,22 +483,15 @@ def letterbox(image, new_shape, color=(114, 114, 114)):
 def to_blob(img):
     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     img = img.astype(np.float32) / 255.0
-    img = np.transpose(img, (2, 0, 1))  # CHW
-    return np.expand_dims(img, 0)       # NCHW
+    img = np.transpose(img, (2, 0, 1))
+    return np.expand_dims(img, 0)
 
 
 def parse_output_any(outs, conf_th):
-    """
-    Supports:
-    A) (N,6): [x1,y1,x2,y2,score,cls]
-    B) Ultralytics (1,C,N)/(C,N)/(N,C): [x,y,w,h, cls scores...]
-    Returns boxes_xyxy in model (letterbox) coords.
-    """
     out = np.array(outs[0])
     if out.ndim == 3:
-        out = out[0]  # remove batch -> (C,N) or (N,C)
+        out = out[0]
 
-    # A) (N,6)
     if out.ndim == 2 and out.shape[1] == 6:
         boxes = out[:, 0:4].astype(np.float32)
         scores = out[:, 4].astype(np.float32)
@@ -537,12 +499,9 @@ def parse_output_any(outs, conf_th):
         keep = scores > conf_th
         return boxes[keep], scores[keep], cls[keep]
 
-    # B) (C,N) or (N,C) with class scores
     if out.ndim == 2:
-        # make (N,C)
         if out.shape[0] < out.shape[1]:
             out = out.transpose(1, 0)
-
         if out.shape[1] < 6:
             return (np.zeros((0, 4), dtype=np.float32),
                     np.zeros((0,), dtype=np.float32),
@@ -550,7 +509,6 @@ def parse_output_any(outs, conf_th):
 
         boxes_xywh = out[:, 0:4].astype(np.float32)
         scores_all = out[:, 4:].astype(np.float32)
-
         cls = np.argmax(scores_all, axis=1).astype(np.int32)
         scores = scores_all[np.arange(scores_all.shape[0]), cls].astype(np.float32)
 
@@ -564,7 +522,6 @@ def parse_output_any(outs, conf_th):
         boxes[:, 1] = boxes_xywh[:, 1] - boxes_xywh[:, 3] / 2.0
         boxes[:, 2] = boxes_xywh[:, 0] + boxes_xywh[:, 2] / 2.0
         boxes[:, 3] = boxes_xywh[:, 1] + boxes_xywh[:, 3] / 2.0
-
         return boxes, scores, cls
 
     return (np.zeros((0, 4), dtype=np.float32),
@@ -582,8 +539,10 @@ def main():
     if TTS_ENABLE:
         if not os.path.isfile(PIPER_MODEL):
             print("[WARN] Piper model not found:", PIPER_MODEL)
-        if not _have_piper():
-            print("[WARN] Piper binary not found or not executable:", PIPER_BIN)
+        elif not os.path.isfile(PIPER_CONFIG):
+            print("[WARN] Piper config json not found (still OK):", PIPER_CONFIG)
+        if not (_cmd_exists("pw-play") or _cmd_exists("paplay") or _cmd_exists("aplay")):
+            print("[WARN] No audio player found. Install pipewire-audio or alsa-utils.")
 
     cam = CamThread(CAM_INDEX, FRAME_W, FRAME_H, CAM_FPS)
     sess, in_name, out_names, yolo_img = create_ort_session(ONNX_PATH)
@@ -622,8 +581,7 @@ def main():
                 ui.draw(face_img, 0.0, tracking=False)
                 if SHOW_UI:
                     cv2.imshow(WINDOW_NAME, face_img)
-                    k = (cv2.waitKey(1) & 0xFF)
-                    if k == ord("q"):
+                    if (cv2.waitKey(1) & 0xFF) == ord("q"):
                         speak_response("quit")
                         break
                 continue
@@ -633,7 +591,6 @@ def main():
             target_dir = 0.0
             target_box = None
 
-            # inference
             if (frame_id % INFER_EVERY_N_FRAMES) == 0:
                 img, scale, pad_w, pad_h = letterbox(frame, (yolo_img, yolo_img))
                 blob = to_blob(img)
@@ -644,12 +601,10 @@ def main():
                     a = np.array(outs[0])
                     print(f"[DBG] out0 shape={a.shape} conf_th={CONF_TH} raw_det={len(boxes_lb)}")
 
-                # filter person
                 mask = (cls == PERSON_CLASS_ID)
                 boxes_lb = boxes_lb[mask]
                 scores = scores[mask]
 
-                # NMS
                 if boxes_lb.shape[0] > 0:
                     nms_boxes = []
                     nms_scores = []
@@ -682,7 +637,6 @@ def main():
                     infer_fps = 0.9 * infer_fps + 0.1 * (1.0 / dt_inf) if infer_fps > 0 else (1.0 / dt_inf)
                 prev_inf = now
 
-            # choose target = largest area
             if person_boxes:
                 areas = [box_area_xyxy(b) for b in person_boxes]
                 best_i = int(np.argmax(np.array(areas)))
@@ -734,10 +688,8 @@ def main():
                     stop_all()
                     ui.set_state("neutral")
 
-            # draw kawaii eyes background
             ui.draw(face_img, target_dir, tracking=tracking)
 
-            # draw PIP camera
             if SHOW_UI:
                 pip = frame.copy()
                 cv2.line(pip, (w0 // 2, 0), (w0 // 2, h0), (0, 255, 255), 2)
@@ -754,7 +706,6 @@ def main():
                 pip_small = cv2.resize(pip, (PIP_W, PIP_H), interpolation=cv2.INTER_LINEAR)
                 face_img[0:PIP_H, 0:PIP_W] = pip_small
 
-                # fps overlay
                 dt_ui = now - prev_ui
                 if dt_ui > 0:
                     ui_fps = 0.9 * ui_fps + 0.1 * (1.0 / dt_ui) if ui_fps > 0 else (1.0 / dt_ui)
@@ -762,11 +713,10 @@ def main():
 
                 status = "TRACK" if tracking else "IDLE"
                 cv2.putText(face_img, f"{status} | UI {ui_fps:.1f} | INFER {infer_fps:.1f} | CONF {CONF_TH}",
-                            (10, UI_H - 55), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (245, 245, 245), 2)
+                            (10, UI_H - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (245, 245, 245), 2)
 
                 cv2.imshow(WINDOW_NAME, face_img)
-                k = (cv2.waitKey(1) & 0xFF)
-                if k == ord("q"):
+                if (cv2.waitKey(1) & 0xFF) == ord("q"):
                     speak_response("quit")
                     break
 
