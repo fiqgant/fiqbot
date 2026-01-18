@@ -16,7 +16,7 @@ import time
 # CONFIG
 # =========================================================
 ONNX_PATH = "yolo11n.onnx"
-IMG_SIZE = 320  # Try 320 first (safer), change to 640 if needed
+IMG_SIZE = 640  # Using 640 as requested
 
 CAM_INDEX = 0
 FRAME_W, FRAME_H = 640, 480
