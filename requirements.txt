@@ -5,5 +5,5 @@ numpy==2.4.1
 onnxruntime==1.23.2
 opencv_contrib_python==4.11.0.86
 opencv_python==4.11.0.86
-faster-whisper
+vosk
 sounddevice

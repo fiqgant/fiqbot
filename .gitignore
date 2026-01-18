@@ -36,6 +36,7 @@ runs/
 *.param
 *.bin
 yolo11n_ncnn_model/
+models/
 
 # =========================
 # Media / Recordings

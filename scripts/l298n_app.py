@@ -15,7 +15,7 @@ import onnxruntime as ort
 import mediapipe as mp
 
 import sounddevice as sd
-from faster_whisper import WhisperModel, download_model
+from vosk import Model as VoskModel, KaldiRecognizer
 
 from gpiozero import Device, Motor
 from gpiozero.pins.lgpio import LGPIOFactory
@@ -25,27 +25,18 @@ from gpiozero.pins.lgpio import LGPIOFactory
 # =========================================================
 
 # ---------- Voice (offline) ----------
-WHISPER_MODEL_SIZE = "small"  # tiny, base, small, medium, large-v3
-WHISPER_DEVICE = "cpu"       # "cuda" if Nvidia GPU, else "cpu"
-WHISPER_COMPUTE = "int8"     # int8 for speed on CPU
-MODELS_DIR = "models"
-
-
+VOSK_MODEL_PATH = "models/vosk-model-en-us-0.22"
 SAMPLE_RATE = 16000
-MIC_DEVICE_INDEX = None
+MIC_DEVICE_INDEX = None  # None = default mic. Put integer to select device.
 
-# Wakeword (in Indonesian context)
+# Wakeword ("Neo")
 WAKE_WORDS = ["neo", "nio", "new", "nioh", "halo", "bro"]
-WAKE_TIMEOUT_S = 8.0
-WAKE_COOLDOWN_S = 1.0
-
-# VAD (Energy based for simplicity)
-VAD_THRESHOLD = 800  # Adjust based on mic sensitivity (PCM 16-bit)
-SILENCE_LIMIT_S = 1.2  # Seconds of silence to consider "done speaking"
-MAX_RECORD_S = 10.0    # Max duration to record command
+WAKE_TIMEOUT_S = 8.0        # after wake, accept commands for this long
+MIN_CMD_GAP_S = 0.25        # prevent double triggers
+WAKE_COOLDOWN_S = 0.8       # prevent repeated "wake" spam
 
 TTS_ENABLE = True
-TTS_LANG = "en-us"  # English
+TTS_LANG = "en-us"             # espeak-ng voice; try "en", "en-us". ("id" if installed)
 
 # ---------- Follow (YOLO ONNX) ----------
 ONNX_PATH = "yolo11n.onnx"
@@ -499,21 +490,15 @@ def choose_target_strict(person_boxes, hx, hy):
 
 
 # ----------------- Voice (Vosk) background -----------------
+voice_audio_q = queue.Queue()
 voice_event_q = queue.Queue()
+
+def audio_callback(indata, frames, t, status):
+    # bytes(indata) for RawInputStream int16
+    voice_audio_q.put(bytes(indata))
 
 def normalize_text(s: str) -> str:
     return (s or "").strip().lower()
-
-def has_wake(text: str) -> bool:
-    t = normalize_text(text)
-    return any(w in t for w in WAKE_WORDS)
-
-def strip_wake(text: str) -> str:
-    t = normalize_text(text)
-    for w in WAKE_WORDS:
-        t = t.replace(w, " ")
-    t = " ".join(t.split())
-    return t
 
 def has_wake(text: str) -> bool:
     t = normalize_text(text)
@@ -567,120 +552,85 @@ def parse_intent(text: str):
 
 class VoiceEngine:
     def __init__(self):
-        print(f"Checking Whisper model '{WHISPER_MODEL_SIZE}' in ./{MODELS_DIR} ...")
-        
-        # Ensure models dir exists
-        os.makedirs(MODELS_DIR, exist_ok=True)
-        
-        # Download (or find existing) model in strictly local folder
-        model_path = download_model(WHISPER_MODEL_SIZE, output_dir=MODELS_DIR)
-        
-        print(f"Loading Whisper model from {model_path}...")
-        self.model = WhisperModel(model_path, device=WHISPER_DEVICE, compute_type=WHISPER_COMPUTE)
-        
+        if not os.path.exists(VOSK_MODEL_PATH):
+             # Try to catch common error if user didn't rename folder
+             possible_path = "models/vosk-model-en-us-0.22"
+             if os.path.isdir(possible_path):
+                 self.model_path = possible_path
+             else:
+                raise RuntimeError(f"Vosk model not found at {VOSK_MODEL_PATH}. Please download and unzip it in 'models/'.")
+        else:
+             self.model_path = VOSK_MODEL_PATH
+
+        print(f"Loading Vosk model from {self.model_path}...")
+        self.model = VoskModel(self.model_path)
+        self.rec = KaldiRecognizer(self.model, SAMPLE_RATE)
+        self.rec.SetWords(False)
+
         self.awake_until = 0.0
+        self.last_cmd_t = 0.0
+        self.last_wake_t = 0.0
         self.stopped = False
-        
-        # Audio buffer
-        self.q = queue.Queue()
-        
+
         self.thread = threading.Thread(target=self._loop, daemon=True)
         self.thread.start()
 
-    def audio_callback(self, indata, frames, time, status):
-        # Flatten to mono 1D array
-        self.q.put(indata.copy())
-
-    def _loop(self):
-        # Buffer for speech
-        buffer = []
-        is_speaking = False
-        silence_start = 0.0
-        speech_start = 0.0
-        
-        with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, callback=self.audio_callback):
-            while not self.stopped:
-                try:
-                    # Get chunk (blocksize is usually small, e.g. 10ms-20ms)
-                    chunk = self.q.get(timeout=1.0)
-                except queue.Empty:
-                    continue
-
-                # Energy check (simple VAD)
-                # chunk is float32 usually if not specified, but we used int16 in prev code?
-                # InputStream default is float32. Let's check amplitude.
-                # If we want int16 similar to before, we can specify dtype='int16' in InputStream
-                # But let's stick to float32 for Whisper ease, or cast.
-                # Actually, Whisper accepts float32 numpy array.
-                
-                vol = np.linalg.norm(chunk) * 10 
-                # Heuristic volume. 
-                # If using float32 [-1, 1], rms is small.
-                
-                is_loud = vol > 0.8  # Threshold needs tuning for float input! 
-                # Let's switch to int16 for consistent VAD thresholding with previous intuition if needed
-                # or just use normalized energy.
-                
-                now = time.time()
-
-                if is_loud:
-                    if not is_speaking:
-                        is_speaking = True
-                        speech_start = now
-                        buffer = []
-                    silence_start = now
-                else:
-                    if is_speaking and (now - silence_start > SILENCE_LIMIT_S):
-                         # End of speech
-                         is_speaking = False
-                         self._process_buffer(buffer)
-                         buffer = []
-
-                if is_speaking:
-                    buffer.append(chunk)
-                    # Safety max length
-                    if (now - speech_start) > MAX_RECORD_S:
-                        is_speaking = False
-                        self._process_buffer(buffer)
-                        buffer = []
-
-    def _process_buffer(self, buffer_chunks):
-        if not buffer_chunks:
-            return
-        
-        # Concat
-        audio_data = np.concatenate(buffer_chunks, axis=0)
-        # Flatten
-        audio_data = audio_data.flatten()
-        
-        # Transcribe
-        segments, info = self.model.transcribe(audio_data, beam_size=5, language="en")
-        
-        full_text = " ".join([s.text for s in segments])
-        full_text = normalize_text(full_text)
-        
-        if not full_text:
-            return
-            
-        if VERBOSE_VOICE_PRINT:
-            print(f"WHISPER ({info.language}): {full_text}")
-            
-        # Logic
-        if has_wake(full_text):
-            self._emit_wake(full_text)
-            full_text = strip_wake(full_text)
-            
-        if time.time() > self.awake_until:
-            return
-            
-        intent = parse_intent(full_text)
-        if intent:
-            voice_event_q.put((intent, full_text))
-
-    def _emit_wake(self, text):
+    def _emit_wake(self, text: str):
         now = time.time()
+        if now - self.last_wake_t < WAKE_COOLDOWN_S:
+            return
+        self.last_wake_t = now
         self.awake_until = now + WAKE_TIMEOUT_S
         voice_event_q.put(("wake", text))
+
+    def _loop(self):
+        with sd.RawInputStream(
+            samplerate=SAMPLE_RATE,
+            blocksize=8000,
+            device=MIC_DEVICE_INDEX,
+            dtype="int16",
+            channels=1,
+            callback=audio_callback
+        ):
+            while not self.stopped:
+                data = voice_audio_q.get()
+
+                # feed decoder
+                _ = self.rec.AcceptWaveform(data)
+
+                # ----- PARTIAL wake detection -----
+                pres = json.loads(self.rec.PartialResult())
+                ptxt = normalize_text(pres.get("partial", ""))
+                if ptxt and has_wake(ptxt):
+                    self._emit_wake(ptxt)
+
+                # ----- FINAL results -----
+                # If last chunk ended an utterance, Result() may contain text; otherwise it's empty sometimes.
+                res = json.loads(self.rec.Result())
+                text = normalize_text(res.get("text", ""))
+                if not text:
+                    continue
+
+                if VERBOSE_VOICE_PRINT:
+                    print("VOICE FINAL:", text)
+
+                # If wake word appears in final, wake and allow inline command
+                if has_wake(text):
+                    self._emit_wake(text)
+                    text = strip_wake(text)
+
+                # Not awake -> ignore
+                if time.time() > self.awake_until:
+                    continue
+
+                # throttle commands
+                if time.time() - self.last_cmd_t < MIN_CMD_GAP_S:
+                    continue
+
+                intent = parse_intent(text)
+                if intent:
+                    self.last_cmd_t = time.time()
+                    voice_event_q.put((intent, text))
 
     def stop(self):
         self.stopped = True
@@ -706,7 +656,7 @@ def main():
         cv2.imshow(WINDOW_NAME, np.zeros((FRAME_H, FRAME_W, 3), dtype=np.uint8))
         cv2.waitKey(1)
 
-    print("Loading Faster Whisper voice...")
+    print("Loading Vosk voice...")
     ve = VoiceEngine()
     speak_response("ready")
 
