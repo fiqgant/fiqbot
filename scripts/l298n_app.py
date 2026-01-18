@@ -92,7 +92,7 @@ INFER_EVERY_N_FRAMES = 2    # lighter CPU -> TTS feels faster; set 1 if still OK
 SHOW_UI = True
 WINDOW_NAME = "Neo Robot"
 UI_W, UI_H = 1280, 720
-PIP_W, PIP_H = 320, 180
+PIP_W, PIP_H = 280, 158
 PIP_PAD = 18 
 FULLSCREEN = True
 
