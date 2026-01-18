@@ -46,6 +46,8 @@ yolo11n_ncnn_model/
 *.mkv
 *.jpg
 *.png
+!assets/*.jpg
+!assets/*.png
 
 # =========================
 # Jupyter

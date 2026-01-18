@@ -71,7 +71,7 @@ Physical connections should be made according to the diagram below. The code use
 | **ENB** | `GPIO 13` | Right Speed Control (PWM) |
 
 ### Wiring Diagram
-![Wiring Diagram](./assets/wiring_bb.png)
+![Wiring Diagram](./assets/wiring_l298n.png)
 
 ---
 
@@ -168,8 +168,8 @@ python scripts/l298n_lock.py
 ```plaintext
 fiqbot/
 ├── assets/               # Wiring diagrams, images, and Fritzing files
-│   ├── wiring_bb.png
-│   └── wiring.fzz
+│   ├── wiring_l298n.png
+│   └── wiring_l298n.fzz
 ├── scripts/              # Core Logic / Source Code
 │   ├── l298n_cam_stream.py    # Web interface backend
 │   ├── l298n_control.py       # SSH remote control
