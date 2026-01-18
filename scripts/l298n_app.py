@@ -15,7 +15,7 @@ import onnxruntime as ort
 import mediapipe as mp
 
 import sounddevice as sd
-from faster_whisper import WhisperModel
+from faster_whisper import WhisperModel, download_model
 
 from gpiozero import Device, Motor
 from gpiozero.pins.lgpio import LGPIOFactory
@@ -28,6 +28,8 @@ from gpiozero.pins.lgpio import LGPIOFactory
 WHISPER_MODEL_SIZE = "small"  # tiny, base, small, medium, large-v3
 WHISPER_DEVICE = "cpu"       # "cuda" if Nvidia GPU, else "cpu"
 WHISPER_COMPUTE = "int8"     # int8 for speed on CPU
+MODELS_DIR = "models"
+
 
 SAMPLE_RATE = 16000
 MIC_DEVICE_INDEX = None
@@ -565,8 +567,16 @@ def parse_intent(text: str):
 
 class VoiceEngine:
     def __init__(self):
-        print(f"Loading Whisper model ({WHISPER_MODEL_SIZE})...")
-        self.model = WhisperModel(WHISPER_MODEL_SIZE, device=WHISPER_DEVICE, compute_type=WHISPER_COMPUTE)
+        print(f"Checking Whisper model '{WHISPER_MODEL_SIZE}' in ./{MODELS_DIR} ...")
+        
+        # Ensure models dir exists
+        os.makedirs(MODELS_DIR, exist_ok=True)
+        
+        # Download (or find existing) model in strictly local folder
+        model_path = download_model(WHISPER_MODEL_SIZE, output_dir=MODELS_DIR)
+        
+        print(f"Loading Whisper model from {model_path}...")
+        self.model = WhisperModel(model_path, device=WHISPER_DEVICE, compute_type=WHISPER_COMPUTE)
         
         self.awake_until = 0.0
         self.stopped = False
