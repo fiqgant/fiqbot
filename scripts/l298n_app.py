@@ -1,4 +1,7 @@
 import os
+os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
+os.environ.setdefault("VOSK_LOG_LEVEL", "0")  # mute Vosk logs
+
 import json
 import time
 import queue
@@ -23,14 +26,16 @@ from gpiozero.pins.lgpio import LGPIOFactory
 # ---------- Voice (offline) ----------
 VOSK_MODEL_PATH = "/home/fiq/fiqbot/models/vosk-model-small-en-us-0.15"
 SAMPLE_RATE = 16000
-MIC_DEVICE_INDEX = None  # None = default mic
+MIC_DEVICE_INDEX = None  # None = default mic. Put integer to select device.
 
-WAKE_WORDS = ["robot", "fiqbot", "fobot"]
-WAKE_TIMEOUT_S = 5.0
-MIN_CMD_GAP_S = 0.25
+# Wakeword for "Neil" can be recognized as variants in Vosk English model
+WAKE_WORDS = ["neil", "neal", "nail"]
+WAKE_TIMEOUT_S = 6.0        # after wake, accept commands for this long
+MIN_CMD_GAP_S = 0.25        # prevent double triggers
+WAKE_COOLDOWN_S = 0.8       # prevent repeated "wake" spam
 
 TTS_ENABLE = True
-TTS_LANG = "en"  # espeak-ng voice id: try "id" if available, else "en"
+TTS_LANG = "en"             # espeak-ng voice; try "en", "en-us". ("id" if installed)
 
 # ---------- Follow (YOLO ONNX) ----------
 ONNX_PATH = "yolo11n.onnx"
@@ -55,8 +60,8 @@ MOTOR_B_BACKWARD = IN3
 MAX_SPEED = 0.80
 MIN_MOVE = 0.25
 
-STEP_SEC = 0.35       # manual step duration
-TURN_STEP_SEC = 0.30  # manual turn duration
+STEP_SEC = 0.40       # manual move duration
+TURN_STEP_SEC = 0.32  # manual spin duration
 
 # ---------- Follow control ----------
 KP_TURN = 1.2
@@ -69,10 +74,10 @@ X_DEADBAND = 0.06
 
 TURN_LIMIT = 0.75
 TURN_MIN = 0.22
-INVERT_TURN = False  # kalau belok kebalik -> True
+INVERT_TURN = False  # if turning is reversed -> True
 
 TARGET_MATCH_IOU = 0.20
-TARGET_LOST_GRACE = 0.8
+TARGET_LOST_GRACE = 0.9
 
 # ---------- Gesture lock ----------
 LOCK_HOLD_FRAMES = 6
@@ -81,12 +86,13 @@ GESTURE_COOLDOWN_S = 1.0
 REQUIRE_HAND_IN_BOX = True
 
 # ---------- Performance ----------
-INFER_EVERY_N_FRAMES = 1  # naikkan jadi 2 kalau mau lebih ringan
+INFER_EVERY_N_FRAMES = 1  # set 2 for less CPU
 
 # ---------- UI ----------
 SHOW_UI = True
-WINDOW_NAME = "Robot All-in-One"
+WINDOW_NAME = "Neil Robot"
 DRAW_ALL_PERSONS = False
+VERBOSE_VOICE_PRINT = True   # print recognized text/events to terminal
 
 # =========================================================
 
@@ -169,8 +175,8 @@ def say(text: str):
 
 # ----------------- Motors (L298N) -----------------
 Device.pin_factory = LGPIOFactory()
-motor_a = Motor(forward=IN1, backward=IN2, enable=ENA, pwm=True)  # kiri
-motor_b = Motor(forward=MOTOR_B_FORWARD, backward=MOTOR_B_BACKWARD, enable=ENB, pwm=True)  # kanan
+motor_a = Motor(forward=IN1, backward=IN2, enable=ENA, pwm=True)  # left
+motor_b = Motor(forward=MOTOR_B_FORWARD, backward=MOTOR_B_BACKWARD, enable=ENB, pwm=True)  # right
 
 def stop_all():
     motor_a.stop()
@@ -221,7 +227,8 @@ class CamThread:
         self.cap.set(cv2.CAP_PROP_FPS, fps)
         self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         if not self.cap.isOpened():
-            raise RuntimeError("Kamera tidak kebuka. Coba ganti CAM_INDEX atau cek /dev/video*")
+            raise RuntimeError("Camera open failed. Check CAM_INDEX or /dev/video*")
+
         self.lock = threading.Lock()
         self.frame = None
         self.ok = False
@@ -266,8 +273,8 @@ def create_ort_session(path: str):
     in_name = sess.get_inputs()[0].name
     out_names = [o.name for o in sess.get_outputs()]
 
-    # Auto-detect input size (avoid 256 vs 320 mismatch)
-    shp = sess.get_inputs()[0].shape  # [1,3,H,W] or dynamic
+    # Auto-detect fixed input size if present: [1,3,H,W]
+    shp = sess.get_inputs()[0].shape
     img_size = 320
     if isinstance(shp, list) and len(shp) == 4:
         h = shp[2]
@@ -390,6 +397,7 @@ voice_audio_q = queue.Queue()
 voice_event_q = queue.Queue()
 
 def audio_callback(indata, frames, t, status):
+    # bytes(indata) for RawInputStream int16
     voice_audio_q.put(bytes(indata))
 
 def normalize_text(s: str) -> str:
@@ -397,57 +405,78 @@ def normalize_text(s: str) -> str:
 
 def has_wake(text: str) -> bool:
     t = normalize_text(text)
+    # substring check is more robust ("hey neil", "neil forward")
+    return any(w in t for w in WAKE_WORDS)
+
+def strip_wake(text: str) -> str:
+    t = normalize_text(text)
     for w in WAKE_WORDS:
-        if w in t.split() or w in t:
-            return True
-    return False
+        t = t.replace(w, " ")
+    t = " ".join(t.split())
+    return t
 
 def parse_intent(text: str):
     t = normalize_text(text)
     if not t:
         return None
 
+    # quit
     if "quit" in t or "exit" in t or "keluar" in t:
         return "quit"
 
+    # modes
     if "follow" in t or "ikuti" in t:
         return "mode_follow"
     if "manual" in t:
         return "mode_manual"
-    if "idle" in t or "standby" in t:
+    if "idle" in t or "standby" in t or "sleep" in t:
         return "mode_idle"
 
+    # stop
     if "stop" in t or "berhenti" in t or "halt" in t or "diam" in t:
         return "stop"
 
+    # motion
     if "forward" in t or "maju" in t or ("go" in t and "back" not in t):
         return "forward"
-    if "backward" in t or "mundur" in t or ("back" in t):
+    if "backward" in t or "mundur" in t or "back" in t:
         return "backward"
     if "left" in t or "kiri" in t:
         return "left"
     if "right" in t or "kanan" in t:
         return "right"
 
+    # status
     if "status" in t or "kabar" in t:
         return "status"
 
     return None
 
+
 class VoiceEngine:
     def __init__(self):
         if not os.path.isdir(VOSK_MODEL_PATH):
-            raise RuntimeError(f"Vosk model folder tidak ditemukan: {VOSK_MODEL_PATH}")
+            raise RuntimeError(f"Vosk model folder not found: {VOSK_MODEL_PATH}")
+
         self.model = VoskModel(VOSK_MODEL_PATH)
         self.rec = KaldiRecognizer(self.model, SAMPLE_RATE)
         self.rec.SetWords(False)
 
         self.awake_until = 0.0
         self.last_cmd_t = 0.0
+        self.last_wake_t = 0.0
         self.stopped = False
 
         self.thread = threading.Thread(target=self._loop, daemon=True)
         self.thread.start()
+
+    def _emit_wake(self, text: str):
+        now = time.time()
+        if now - self.last_wake_t < WAKE_COOLDOWN_S:
+            return
+        self.last_wake_t = now
+        self.awake_until = now + WAKE_TIMEOUT_S
+        voice_event_q.put(("wake", text))
 
     def _loop(self):
         with sd.RawInputStream(
@@ -460,32 +489,46 @@ class VoiceEngine:
         ):
             while not self.stopped:
                 data = voice_audio_q.get()
-                if self.rec.AcceptWaveform(data):
-                    res = json.loads(self.rec.Result())
-                    text = normalize_text(res.get("text", ""))
-                    if not text:
-                        continue
 
-                    if has_wake(text):
-                        self.awake_until = time.time() + WAKE_TIMEOUT_S
-                        voice_event_q.put(("wake", text))
-                        continue
+                # feed decoder
+                _ = self.rec.AcceptWaveform(data)
 
-                    if time.time() > self.awake_until:
-                        continue
+                # ----- PARTIAL wake detection -----
+                pres = json.loads(self.rec.PartialResult())
+                ptxt = normalize_text(pres.get("partial", ""))
+                if ptxt and has_wake(ptxt):
+                    self._emit_wake(ptxt)
 
-                    if time.time() - self.last_cmd_t < MIN_CMD_GAP_S:
-                        continue
+                # ----- FINAL results -----
+                # If last chunk ended an utterance, Result() may contain text; otherwise it's empty sometimes.
+                res = json.loads(self.rec.Result())
+                text = normalize_text(res.get("text", ""))
+                if not text:
+                    continue
 
-                    intent = parse_intent(text)
-                    if intent:
-                        self.last_cmd_t = time.time()
-                        voice_event_q.put((intent, text))
+                if VERBOSE_VOICE_PRINT:
+                    print("VOICE FINAL:", text)
+
+                # If wake word appears in final, wake and allow inline command
+                if has_wake(text):
+                    self._emit_wake(text)
+                    text = strip_wake(text)
+
+                # Not awake -> ignore
+                if time.time() > self.awake_until:
+                    continue
+
+                # throttle commands
+                if time.time() - self.last_cmd_t < MIN_CMD_GAP_S:
+                    continue
+
+                intent = parse_intent(text)
+                if intent:
+                    self.last_cmd_t = time.time()
+                    voice_event_q.put((intent, text))
 
     def stop(self):
         self.stopped = True
-print("VOICE READY")
-say("Voice ready")
 
 
 # ----------------- MAIN -----------------
@@ -495,7 +538,7 @@ MODE_FOLLOW = "FOLLOW"
 
 def main():
     if not os.path.isfile(ONNX_PATH):
-        raise RuntimeError(f"ONNX model tidak ditemukan: {ONNX_PATH}")
+        raise RuntimeError(f"ONNX model not found: {ONNX_PATH}")
 
     cam = CamThread(CAM_INDEX, FRAME_W, FRAME_H, CAM_FPS)
     sess, in_name, out_names, img_size = create_ort_session(ONNX_PATH)
@@ -510,7 +553,7 @@ def main():
 
     print("Loading Vosk voice...")
     ve = VoiceEngine()
-    say("Ready")
+    say("Neil ready")
 
     # FOLLOW state
     locked = False
@@ -536,6 +579,9 @@ def main():
                     intent, raw = voice_event_q.get_nowait()
                 except queue.Empty:
                     break
+
+                if VERBOSE_VOICE_PRINT:
+                    print("VOICE EVENT:", intent, "| raw:", raw)
 
                 if intent == "wake":
                     say("Yes")
@@ -742,10 +788,14 @@ def main():
                         set_motor(motor_a, left)
                         set_motor(motor_b, right)
 
+            else:
+                # safety if not following
+                if mode == MODE_IDLE:
+                    stop_all()
+
             # ---- UI ----
             if SHOW_UI:
                 vis = frame.copy()
-
                 cv2.line(vis, (w0 // 2, 0), (w0 // 2, h0), (0, 255, 255), 2)
 
                 if mode == MODE_FOLLOW:
@@ -773,10 +823,10 @@ def main():
                     st = "LOCKED" if locked else "UNLOCKED"
                     cv2.putText(vis, f"FOLLOW {st} | Gesture {gesture}",
                                 (10, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-                    cv2.putText(vis, "OPEN palm=LOCK | FIST=UNLOCK | say 'robot' then 'follow/manual/idle'",
+                    cv2.putText(vis, "OPEN palm=LOCK | FIST=UNLOCK | say 'Neil' then follow/manual/idle",
                                 (10, h0 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
                 else:
-                    cv2.putText(vis, "Say 'robot' then: follow/manual/idle/forward/back/left/right/stop",
+                    cv2.putText(vis, "Say 'Neil' then: follow/manual/idle/forward/back/left/right/stop",
                                 (10, h0 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
 
                 show = fit_to_window(vis, win_w, win_h)
