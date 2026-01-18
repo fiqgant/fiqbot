@@ -395,10 +395,23 @@ class KawaiiEyesUI:
         self.h = int(h)
         self.state = "neutral"
 
+        # smoothed gaze
         self.gaze_x = 0.0
         self.gaze_goal = 0.0
-        self.GAZE_ALPHA = 0.12
-        self.GAZE_MAX_STEP = 0.04
+
+        # --- Dynamic smoothing knobs ---
+        # idle: smooth and slow
+        self.GAZE_ALPHA_IDLE = 0.10
+        self.GAZE_STEP_IDLE  = 0.045
+
+        # tracking: more responsive
+        self.GAZE_ALPHA_TRACK = 0.28   # bigger = faster response
+        self.GAZE_STEP_TRACK  = 0.12   # bigger = can jump faster
+
+        # extra boost if target jumps a lot
+        self.GAZE_BOOST_ALPHA = 0.45
+        self.GAZE_BOOST_STEP  = 0.18
+        self.GAZE_BOOST_IF_DELTA_GT = 0.35  # if desired-current > this -> boost
 
         self.blink_t = 0.0
         self.next_blink = time.time() + random.uniform(2.0, 5.0)
@@ -456,12 +469,27 @@ class KawaiiEyesUI:
             else:
                 self.extra_mood = "none"
 
-    def _smooth_gaze(self, desired: float):
+    def _smooth_gaze(self, desired: float, tracking: bool):
         desired = float(clamp(desired, -1.0, 1.0))
-        proposed = self.gaze_x + (desired - self.gaze_x) * self.GAZE_ALPHA
+
+        if tracking:
+            alpha = self.GAZE_ALPHA_TRACK
+            max_step = self.GAZE_STEP_TRACK
+        else:
+            alpha = self.GAZE_ALPHA_IDLE
+            max_step = self.GAZE_STEP_IDLE
+
+        # if desired suddenly jumps a lot, temporarily boost responsiveness
+        if abs(desired - self.gaze_x) > self.GAZE_BOOST_IF_DELTA_GT:
+            alpha = max(alpha, self.GAZE_BOOST_ALPHA)
+            max_step = max(max_step, self.GAZE_BOOST_STEP)
+
+        proposed = self.gaze_x + (desired - self.gaze_x) * alpha
+
         step = proposed - self.gaze_x
-        if abs(step) > self.GAZE_MAX_STEP:
-            proposed = self.gaze_x + self.GAZE_MAX_STEP * sign(step)
+        if abs(step) > max_step:
+            proposed = self.gaze_x + max_step * sign(step)
+
         self.gaze_x = float(clamp(proposed, -1.0, 1.0))
         return self.gaze_x
 
@@ -480,8 +508,9 @@ class KawaiiEyesUI:
         else:
             self.gaze_goal = self._idle_target_x(now)
 
-        gaze = self._smooth_gaze(self.gaze_goal)
+        gaze = self._smooth_gaze(self.gaze_goal, tracking=tracking)
 
+        # palette (BGR)
         if self.state == "happy":
             eye_fill = (240, 250, 255)
             outline = (170, 220, 255)
@@ -511,7 +540,9 @@ class KawaiiEyesUI:
         eye_w = 150
         eye_h = 185
 
-        pupil_dx = int(55 * gaze)
+        # tracking -> bigger range so it "looks" more responsive
+        pupil_range = 65 if tracking else 55
+        pupil_dx = int(pupil_range * gaze)
         pupil_dy = int(10 * math.sin(self.phase * 0.7))
 
         blink = self._blink_now(now)
@@ -579,7 +610,6 @@ class KawaiiEyesUI:
             cv2.ellipse(canvas, (mx, my + 10), (26, 14), 0, 200, 340, mouth, 4)
         else:
             cv2.circle(canvas, (mx, my), 6, mouth, -1)
-
 
 # =========================================================
 # CAMERA THREAD
