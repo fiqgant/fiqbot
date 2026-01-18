@@ -362,6 +362,8 @@ def main():
                 h0, w0 = frame.shape[:2]
                 
                 # YOLO Inference
+                # Back to 160 because the ONNX model has fixed input dimensions
+                YOLO_IMG_SIZE = 160
                 img, scale, pad_w, pad_h = letterbox(frame, (YOLO_IMG_SIZE, YOLO_IMG_SIZE))
                 blob = to_blob(img)
                 outs = sess.run(out_names, {in_name: blob})
