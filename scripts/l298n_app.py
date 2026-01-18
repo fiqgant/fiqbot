@@ -27,8 +27,8 @@ TTS_ENABLE = True
 TTS_MIN_GAP = 2.0  # seconds between TTS (avoid spam)
 
 PIPER_BIN = "piper"  # or "/usr/local/bin/piper"
-PIPER_MODEL = "/home/pi/voices/piper/en_US-lessac-medium.onnx"
-PIPER_CONFIG = "/home/pi/voices/piper/en_US-lessac-medium.onnx.json"  # optional
+PIPER_MODEL = os.path.expanduser("~/voices/piper/en_US-lessac-medium.onnx")
+PIPER_CONFIG = os.path.expanduser("~/voices/piper/en_US-lessac-medium.onnx.json")
 PIPER_SPEAKER = None  # int for multi-speaker models, else None
 
 PIPER_LENGTH_SCALE = 1.05   # >1 slower, <1 faster
