@@ -1,13 +1,12 @@
 # neo_follow_ui_piper_kawaii_full.py
-# - Kawaii HDMI RoboEyes-style UI (OpenCV fullscreen)
+# - Kawaii HDMI RoboEyes-style UI (OpenCV fullscreen) -> NO TEXT OVERLAY (eyes + small camera only)
 # - Piper TTS via python -m piper, with QUEUE + CACHE (no cut, supports long speech)
 # - Audio playback prefers pw-play (PipeWire) then paplay then aplay
 # - Robust ONNX output parsing (supports (N,6) and Ultralytics (1,C,N)/(1,N,C))
 # - Auto-detect ONNX input size
-# - Debug overlay + periodic terminal prints
 # - L298N motors via gpiozero + LGPIOFactory
-# - Camera PIP + boxes
-# - NEW: random expressions + random quotes + random idle chatter
+# - Camera PIP small bottom-right + boxes
+# - Random expressions + random quotes + random idle chatter
 #
 # Run:
 #   source ~/fiqbot/robot/bin/activate
@@ -38,15 +37,15 @@ from gpiozero.pins.lgpio import LGPIOFactory
 
 # ---------- TTS (Piper) ----------
 TTS_ENABLE = True
-TTS_MIN_GAP = 1.5           # smaller = more talkative, but still avoid spam
-TTS_MAX_CHARS = 220         # split long text into chunks (natural + safe)
+TTS_MIN_GAP = 1.5
+TTS_MAX_CHARS = 220
 TTS_CACHE_DIR = "/tmp/neo_tts_cache"
 
 PIPER_MODEL = os.path.expanduser("~/voices/piper/en_US-lessac-medium.onnx")
 PIPER_CONFIG = os.path.expanduser("~/voices/piper/en_US-lessac-medium.onnx.json")
 PIPER_SPEAKER = None
 
-PIPER_LENGTH_SCALE = 1.05   # >1 slower, <1 faster
+PIPER_LENGTH_SCALE = 1.05
 PIPER_NOISE_SCALE = 0.667
 PIPER_NOISE_W = 0.8
 
@@ -86,18 +85,16 @@ INVERT_TURN = False
 TARGET_LOST_GRACE = 1.5
 
 # ---------- Performance ----------
-INFER_EVERY_N_FRAMES = 2    # lighter CPU -> TTS feels faster; set 1 if still OK
+INFER_EVERY_N_FRAMES = 2
 
 # ---------- UI ----------
 SHOW_UI = True
 WINDOW_NAME = "Neo Robot"
 UI_W, UI_H = 1280, 720
 PIP_W, PIP_H = 280, 158
-PIP_PAD = 18 
+PIP_PAD = 18
 FULLSCREEN = True
 
-# ---------- Debug ----------
-DEBUG_PRINT_EVERY = 30
 DRAW_ALL_PERSONS = True
 
 # ---------- Random personality ----------
@@ -166,7 +163,6 @@ _tts_q = queue.Queue(maxsize=12)
 _tts_worker_started = False
 _last_tts_t = 0.0
 
-# --- Cute random quotes / phrases ---
 NEO_QUOTES = [
     "Beep beep. I'm trying my best!",
     "If lost, please reboot human.",
@@ -181,24 +177,12 @@ NEO_QUOTES = [
 ]
 
 NEO_EXPRESSIONS = {
-    "giggle": [
-        "Hehe!", "Hihi!", "Ehehe!", "Tehehe!"
-    ],
-    "wow": [
-        "Whoa!", "Waaah!", "Wowza!", "Ohhh!"
-    ],
-    "curious": [
-        "Hmm?", "Ooh?", "What is that?", "Interesting..."
-    ],
-    "encourage": [
-        "You got this!", "Let's go!", "I'm with you!", "Okay okay!"
-    ],
-    "apologize": [
-        "Sorry sorry!", "Oops!", "My bad!", "I didn't mean to!"
-    ],
-    "robot": [
-        "Beep.", "Boop.", "Beep boop!", "Bweep!"
-    ]
+    "giggle": ["Hehe!", "Hihi!", "Ehehe!", "Tehehe!"],
+    "wow": ["Whoa!", "Waaah!", "Wowza!", "Ohhh!"],
+    "curious": ["Hmm?", "Ooh?", "What is that?", "Interesting..."],
+    "encourage": ["You got this!", "Let's go!", "I'm with you!", "Okay okay!"],
+    "apologize": ["Sorry sorry!", "Oops!", "My bad!", "I didn't mean to!"],
+    "robot": ["Beep.", "Boop.", "Beep boop!", "Bweep!"],
 }
 
 NEO_RESPONSES = {
@@ -214,7 +198,7 @@ NEO_RESPONSES = {
         "Standing by! Wave at me, and I will start following you.",
         "I'm ready. Please step in front of the camera so I can lock on to you."
     ],
-    "quit": ["Shutting down. Goodbye!"]
+    "quit": ["Shutting down. Goodbye!"],
 }
 
 def _hash_key(s: str) -> str:
@@ -254,7 +238,7 @@ def _split_text(text: str, max_chars: int):
             final.append(m)
         else:
             for i in range(0, len(m), max_chars):
-                final.append(m[i:i+max_chars])
+                final.append(m[i:i + max_chars])
     return final
 
 def _piper_cmd(out_path: str):
@@ -282,7 +266,7 @@ def _ensure_wav(text: str) -> str:
             stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            text=True
+            text=True,
         )
         try:
             p.stdin.write(text)
@@ -324,9 +308,9 @@ def _start_tts_worker_once():
 def _decorate(text: str) -> str:
     if not EXPRESSIONS_ENABLE:
         return text
-    # add short prefix/suffix sometimes (keeps it cute but not too spammy)
     prefix = ""
     suffix = ""
+
     r = random.random()
     if r < 0.25:
         prefix = random.choice(NEO_EXPRESSIONS["robot"]) + " "
@@ -361,11 +345,9 @@ def say(text: str):
     _start_tts_worker_once()
 
     text = _decorate(text)
-
     try:
         _tts_q.put_nowait(text)
     except queue.Full:
-        # drop if too chatty, avoid blocking robot loop
         pass
 
 def speak_response(key: str):
@@ -378,8 +360,8 @@ def maybe_idle_chatter(tracking: bool, next_idle_t: float) -> float:
     now = time.time()
     if tracking:
         return now + random.uniform(IDLE_CHATTER_MIN_S, IDLE_CHATTER_MAX_S)
+
     if now >= next_idle_t and random.random() < 0.75:
-        # mix of short expression + quote + small instruction
         idle_lines = [
             "I'm here. Wave at me!",
             "If you want me to follow you, stand in the middle.",
@@ -388,11 +370,11 @@ def maybe_idle_chatter(tracking: bool, next_idle_t: float) -> float:
             "I am scanning for a human-shaped friend.",
         ]
         line = random.choice(idle_lines)
-        # sometimes just a quote
         if random.random() < 0.35:
             line = random.choice(NEO_QUOTES)
         say(line)
         return now + random.uniform(IDLE_CHATTER_MIN_S, IDLE_CHATTER_MAX_S)
+
     return next_idle_t
 
 
@@ -419,45 +401,33 @@ def set_motor(motor: Motor, v: float):
 
 
 # =========================================================
-# KAWAII HDMI ROBOEYES-STYLE UI (with extra moods)
+# KAWAII HDMI ROBOEYES-STYLE UI (NO TEXT)
 # =========================================================
-# PATCH: smoother pupil movement (low-pass filter) + optional speed limit
-# Drop-in replacement for KawaiiEyesUI class in your current file.
-# (Everything else stays the same.)
-
 class KawaiiEyesUI:
     def __init__(self, w, h):
         self.w = int(w)
         self.h = int(h)
         self.state = "neutral"
 
-        # --- target / smoothed gaze ---
-        self.target_x = 0.0          # raw input (-1..1)
-        self.gaze_x = 0.0            # smoothed
-        self.gaze_goal = 0.0         # desired gaze (tracking or idle)
-        self.gaze_v = 0.0            # (optional) velocity for smoothstep-ish feel
+        # smoothed gaze
+        self.gaze_x = 0.0
+        self.gaze_goal = 0.0
+        self.GAZE_ALPHA = 0.12
+        self.GAZE_MAX_STEP = 0.04
 
-        # smoothing knobs (tune)
-        self.GAZE_ALPHA = 0.12       # 0.05 smoother/slower, 0.20 faster
-        self.GAZE_MAX_STEP = 0.04    # max change per frame (limit jitter)
-
-        # blink / wink
         self.blink_t = 0.0
         self.next_blink = time.time() + random.uniform(2.0, 5.0)
         self.wink_t = 0.0
         self.wink_side = None
 
-        # idle drift
         self.idle_x = 0.0
         self.idle_goal = 0.0
         self.next_idle_shift = time.time() + random.uniform(0.7, 1.7)
 
-        # anim phases
         self.phase = 0.0
         self.sparkle_phase = 0.0
         self.mouth_phase = 0.0
 
-        # extra mood
         self.extra_mood = "none"
         self.next_mood = time.time() + random.uniform(4, 9)
 
@@ -502,21 +472,11 @@ class KawaiiEyesUI:
                 self.extra_mood = "none"
 
     def _smooth_gaze(self, desired: float):
-        """
-        Low-pass with step limit:
-          - desired: [-1..1]
-          - gaze_x changes smoothly even if detection jumps
-        """
         desired = float(clamp(desired, -1.0, 1.0))
-
-        # standard low-pass
         proposed = self.gaze_x + (desired - self.gaze_x) * self.GAZE_ALPHA
-
-        # step limit for sudden jumps (kills jitter)
         step = proposed - self.gaze_x
         if abs(step) > self.GAZE_MAX_STEP:
             proposed = self.gaze_x + self.GAZE_MAX_STEP * sign(step)
-
         self.gaze_x = float(clamp(proposed, -1.0, 1.0))
         return self.gaze_x
 
@@ -530,13 +490,11 @@ class KawaiiEyesUI:
         self.sparkle_phase += 0.12
         self.mouth_phase += 0.10
 
-        # --- choose desired gaze ---
         if tracking:
             self.gaze_goal = float(clamp(target_x, -1.0, 1.0))
         else:
             self.gaze_goal = self._idle_target_x(now)
 
-        # --- smooth it ---
         gaze = self._smooth_gaze(self.gaze_goal)
 
         # palette (BGR)
@@ -569,9 +527,8 @@ class KawaiiEyesUI:
         eye_w = 150
         eye_h = 185
 
-        # <<< SMOOTH pupil dx uses `gaze` not raw target >>>
         pupil_dx = int(55 * gaze)
-        pupil_dy = int(10 * math.sin(self.phase * 0.7))  # slightly smaller vertical wobble
+        pupil_dy = int(10 * math.sin(self.phase * 0.7))
 
         blink = self._blink_now(now)
         wink = self._wink_side_now(now)
@@ -589,7 +546,6 @@ class KawaiiEyesUI:
             px = cx + pupil_dx
             py = cy_ + pupil_dy
 
-            # special pupils
             if self.extra_mood == "love":
                 cv2.circle(canvas, (px - 10, py), 18, (0, 0, 255), -1)
                 cv2.circle(canvas, (px + 10, py), 18, (0, 0, 255), -1)
@@ -600,7 +556,6 @@ class KawaiiEyesUI:
             else:
                 cv2.circle(canvas, (px, py), 38, pupil, -1)
 
-            # highlights
             s1 = int(10 + 4 * (0.5 + 0.5 * math.sin(self.sparkle_phase)))
             s2 = int(6 + 3 * (0.5 + 0.5 * math.cos(self.sparkle_phase)))
             cv2.circle(canvas, (px - 14, py - 14), s1, (255, 255, 255), -1)
@@ -621,7 +576,6 @@ class KawaiiEyesUI:
         else:
             draw_open(cx2, cy_eyes)
 
-        # blush
         blush_alpha = 0.55 if self.state == "happy" else (0.25 if self.state == "neutral" else 0.18)
         overlay = canvas.copy()
         r = 38
@@ -629,7 +583,6 @@ class KawaiiEyesUI:
         cv2.circle(overlay, (cx2 - 135, cy_eyes + 95), r, blush, -1)
         cv2.addWeighted(overlay, blush_alpha, canvas, 1.0 - blush_alpha, 0, canvas)
 
-        # mouth
         mx = self.w // 2
         my = cy + 210 + bob
         if self.extra_mood == "shock":
@@ -643,8 +596,6 @@ class KawaiiEyesUI:
         else:
             cv2.circle(canvas, (mx, my), 6, mouth, -1)
 
-        label = "TRACKING!" if tracking else "IDLE..."
-        cv2.putText(canvas, label, (20, self.h - 25), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (240, 240, 240), 2)
 
 # =========================================================
 # CAMERA THREAD
@@ -726,6 +677,8 @@ def letterbox(image, new_shape, color=(114, 114, 114)):
     canvas = np.full((nh, nw, 3), color, dtype=np.uint8)
     pad_w = (nw - new_w) // 2
     pad_h = (nh - new_h) // 2
+    canvas[pad_h:pad_h + new_h, pad_w:pad_w + new_h] = resized if new_h == resized.shape[0] else resized
+    # safer slice:
     canvas[pad_h:pad_h + new_h, pad_w:pad_w + new_w] = resized
     return canvas, scale, pad_w, pad_h
 
@@ -784,20 +737,7 @@ def main():
     if not os.path.isfile(ONNX_PATH):
         raise RuntimeError(f"ONNX model not found: {ONNX_PATH}")
 
-    if TTS_ENABLE:
-        if not os.path.isfile(PIPER_MODEL):
-            print("[WARN] Piper model not found:", PIPER_MODEL)
-        elif not os.path.isfile(PIPER_CONFIG):
-            print("[WARN] Piper config json not found (still OK):", PIPER_CONFIG)
-
-        if not (_cmd_exists("pw-play") or _cmd_exists("paplay") or _cmd_exists("aplay")):
-            print("[WARN] No audio player found. Install pipewire-audio/pipewire-pulse or alsa-utils.")
-
-    # start TTS worker
-    global _tts_worker_started
-    if not _tts_worker_started:
-        _tts_worker_started = True
-        threading.Thread(target=_tts_worker_loop, daemon=True).start()
+    _start_tts_worker_once()
 
     cam = CamThread(CAM_INDEX, FRAME_W, FRAME_H, CAM_FPS)
     sess, in_name, out_names, yolo_img = create_ort_session(ONNX_PATH)
@@ -819,9 +759,6 @@ def main():
     tracking = False
 
     frame_id = 0
-    ui_fps = 0.0
-    infer_fps = 0.0
-    prev_ui = time.time()
     prev_inf = time.time()
 
     next_idle_t = time.time() + random.uniform(IDLE_CHATTER_MIN_S, IDLE_CHATTER_MAX_S)
@@ -854,10 +791,6 @@ def main():
                 outs = sess.run(out_names, {in_name: blob})
                 boxes_lb, scores, cls = parse_output_any(outs, CONF_TH)
 
-                if frame_id % DEBUG_PRINT_EVERY == 0:
-                    a = np.array(outs[0])
-                    print(f"[DBG] out0 shape={a.shape} conf_th={CONF_TH} raw_det={len(boxes_lb)}")
-
                 mask = (cls == PERSON_CLASS_ID)
                 boxes_lb = boxes_lb[mask]
                 scores = scores[mask]
@@ -889,9 +822,6 @@ def main():
 
                             person_boxes.append((float(x1), float(y1), float(x2), float(y2)))
 
-                dt_inf = now - prev_inf
-                if dt_inf > 0:
-                    infer_fps = 0.9 * infer_fps + 0.1 * (1.0 / dt_inf) if infer_fps > 0 else (1.0 / dt_inf)
                 prev_inf = now
 
             if person_boxes:
@@ -934,9 +864,6 @@ def main():
 
                 next_idle_t = now + random.uniform(IDLE_CHATTER_MIN_S, IDLE_CHATTER_MAX_S)
 
-                if frame_id % DEBUG_PRINT_EVERY == 0:
-                    print(f"[DBG] persons={len(person_boxes)} best_area_norm={area_norm:.3f} err_x={err_x:.2f} base={base:.2f} turn={turn:.2f}")
-
             else:
                 if tracking and (now - last_seen) > TARGET_LOST_GRACE:
                     tracking = False
@@ -953,44 +880,25 @@ def main():
 
             if SHOW_UI:
                 pip = frame.copy()
-                cv2.line(pip, (w0 // 2, 0), (w0 // 2, h0), (0, 255, 255), 2)
 
                 if DRAW_ALL_PERSONS:
                     for b in person_boxes:
-                        x1, y1, x2, y2 = map(int, b)
-                        cv2.rectangle(pip, (x1, y1), (x2, y2), (0, 200, 0), 2)
+                        x1_, y1_, x2_, y2_ = map(int, b)
+                        cv2.rectangle(pip, (x1_, y1_), (x2_, y2_), (0, 200, 0), 2)
 
                 if target_box is not None:
-                    x1, y1, x2, y2 = map(int, target_box)
-                    cv2.rectangle(pip, (x1, y1), (x2, y2), (0, 255, 255), 3)
+                    x1_, y1_, x2_, y2_ = map(int, target_box)
+                    cv2.rectangle(pip, (x1_, y1_), (x2_, y2_), (0, 255, 255), 3)
 
                 pip_small = cv2.resize(pip, (PIP_W, PIP_H), interpolation=cv2.INTER_LINEAR)
 
-                # --- place PIP bottom-right with padding ---
                 x0 = UI_W - PIP_W - PIP_PAD
                 y0 = UI_H - PIP_H - PIP_PAD
-
-                # safety clamp (just in case)
                 x0 = max(0, min(UI_W - PIP_W, x0))
                 y0 = max(0, min(UI_H - PIP_H, y0))
 
                 face_img[y0:y0 + PIP_H, x0:x0 + PIP_W] = pip_small
-
-                # optional: add a thin border so it looks neat
                 cv2.rectangle(face_img, (x0 - 2, y0 - 2), (x0 + PIP_W + 2, y0 + PIP_H + 2), (255, 255, 255), 2)
-
-                dt_ui = now - prev_ui
-                if dt_ui > 0:
-                    ui_fps = 0.9 * ui_fps + 0.1 * (1.0 / dt_ui) if ui_fps > 0 else (1.0 / dt_ui)
-                prev_ui = now
-
-                status = "TRACK" if tracking else "IDLE"
-                cv2.putText(face_img, f"{status} | UI {ui_fps:.1f} | INFER {infer_fps:.1f} | CONF {CONF_TH}",
-                            (10, UI_H - 60), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (245, 245, 245), 2)
-
-                if EXPRESSIONS_ENABLE:
-                    cv2.putText(face_img, f"mood: {ui.state} | extra: {ui.extra_mood}",
-                                (10, UI_H - 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (245, 245, 245), 2)
 
                 cv2.imshow(WINDOW_NAME, face_img)
                 if (cv2.waitKey(1) & 0xFF) == ord("q"):
