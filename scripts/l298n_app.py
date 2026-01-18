@@ -92,7 +92,8 @@ INFER_EVERY_N_FRAMES = 2    # lighter CPU -> TTS feels faster; set 1 if still OK
 SHOW_UI = True
 WINDOW_NAME = "Neo Robot"
 UI_W, UI_H = 1280, 720
-PIP_W, PIP_H = 420, 236
+PIP_W, PIP_H = 320, 180
+PIP_PAD = 18 
 FULLSCREEN = True
 
 # ---------- Debug ----------
@@ -956,15 +957,27 @@ def main():
 
                 if DRAW_ALL_PERSONS:
                     for b in person_boxes:
-                        x1_, y1_, x2_, y2_ = map(int, b)
-                        cv2.rectangle(pip, (x1_, y1_), (x2_, y2_), (0, 200, 0), 2)
+                        x1, y1, x2, y2 = map(int, b)
+                        cv2.rectangle(pip, (x1, y1), (x2, y2), (0, 200, 0), 2)
 
                 if target_box is not None:
-                    x1_, y1_, x2_, y2_ = map(int, target_box)
-                    cv2.rectangle(pip, (x1_, y1_), (x2_, y2_), (0, 255, 255), 3)
+                    x1, y1, x2, y2 = map(int, target_box)
+                    cv2.rectangle(pip, (x1, y1), (x2, y2), (0, 255, 255), 3)
 
                 pip_small = cv2.resize(pip, (PIP_W, PIP_H), interpolation=cv2.INTER_LINEAR)
-                face_img[0:PIP_H, 0:PIP_W] = pip_small
+
+                # --- place PIP bottom-right with padding ---
+                x0 = UI_W - PIP_W - PIP_PAD
+                y0 = UI_H - PIP_H - PIP_PAD
+
+                # safety clamp (just in case)
+                x0 = max(0, min(UI_W - PIP_W, x0))
+                y0 = max(0, min(UI_H - PIP_H, y0))
+
+                face_img[y0:y0 + PIP_H, x0:x0 + PIP_W] = pip_small
+
+                # optional: add a thin border so it looks neat
+                cv2.rectangle(face_img, (x0 - 2, y0 - 2), (x0 + PIP_W + 2, y0 + PIP_H + 2), (255, 255, 255), 2)
 
                 dt_ui = now - prev_ui
                 if dt_ui > 0:
