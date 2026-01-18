@@ -71,7 +71,7 @@ Physical connections should be made according to the diagram below. The code use
 | **ENB** | `GPIO 13` | Right Speed Control (PWM) |
 
 ### Wiring Diagram
-![Wiring Diagram](assets/wiring_bb.png)
+![Wiring Diagram](./assets/wiring_bb.png)
 
 ---
 
