@@ -489,10 +489,38 @@ def main():
                 
                 final_vis = face_img.copy()
                 
-                # Small camera PIP
+                # Small camera PIP with bounding boxes
                 if ok and frame is not None:
-                     small_cam = cv2.resize(frame, (160, 90))
-                     final_vis[0:90, 0:160] = small_cam
+                    # Draw debug bounding boxes on frame
+                    debug_frame = frame.copy()
+                    
+                    # Draw ALL detections in gray (before filtering)
+                    if len(boxes) > 0:
+                        all_boxes_orig = boxes  # These are already person-filtered at this point
+                        # We need to re-parse to get ALL boxes
+                        # Let's just draw the person boxes in green
+                        for i, box in enumerate(boxes):
+                            x1, y1, x2, y2 = box
+                            # Transform back to original coords
+                            x1 = int((x1 - pad_w) / scale)
+                            y1 = int((y1 - pad_h) / scale)
+                            x2 = int((x2 - pad_w) / scale)
+                            y2 = int((y2 - pad_h) / scale)
+                            
+                            # Clamp to frame
+                            x1 = max(0, min(x1, w0))
+                            y1 = max(0, min(y1, h0))
+                            x2 = max(0, min(x2, w0))
+                            y2 = max(0, min(y2, h0))
+                            
+                            # Draw person box in green
+                            cv2.rectangle(debug_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                            cv2.putText(debug_frame, f"P {scores[i]:.2f}", (x1, y1 - 5),
+                                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+                    
+                    # Resize to PIP size
+                    small_cam = cv2.resize(debug_frame, (160, 90))
+                    final_vis[0:90, 0:160] = small_cam
 
                 show = fit_to_window(final_vis, 800, 480)
                 cv2.imshow(WINDOW_NAME, show)
