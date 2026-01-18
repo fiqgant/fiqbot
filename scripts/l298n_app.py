@@ -484,6 +484,8 @@ class VoiceEngine:
 
     def stop(self):
         self.stopped = True
+print("VOICE READY")
+say("Voice ready")
 
 
 # ----------------- MAIN -----------------
