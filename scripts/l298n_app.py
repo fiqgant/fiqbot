@@ -30,7 +30,7 @@ SAMPLE_RATE = 16000
 MIC_DEVICE_INDEX = None  # None = default mic. Put integer to select device.
 
 # Wakeword ("Neo")
-WAKE_WORDS = ["neo", "nio", "new", "nioh", "halo", "bro"]
+WAKE_WORDS = ["neo", "nio", "new", "nioh", "halo", "bro", "no", "now", "fail", "neil", "oh"]
 WAKE_TIMEOUT_S = 8.0        # after wake, accept commands for this long
 MIN_CMD_GAP_S = 0.25        # prevent double triggers
 WAKE_COOLDOWN_S = 0.8       # prevent repeated "wake" spam
