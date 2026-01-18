@@ -31,7 +31,7 @@ CAM_INDEX = 0
 FRAME_W, FRAME_H = 512, 288
 CAM_FPS = 60
 
-IMG_SIZE = 320
+IMG_SIZE = 640
 CONF_TH = 0.35
 NMS_TH = 0.45
 PERSON_CLASS_ID = 0
@@ -214,7 +214,7 @@ in_name = sess.get_inputs()[0].name
 out_names = [o.name for o in sess.get_outputs()]
 
 
-def letterbox(image, new_shape=(320, 320), color=(114, 114, 114)):
+def letterbox(image, new_shape=(640, 640), color=(114, 114, 114)):
     h, w = image.shape[:2]
     nh, nw = new_shape
     scale = min(nw / w, nh / h)
