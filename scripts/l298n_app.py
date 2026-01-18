@@ -23,7 +23,7 @@ TTS_LANG = "en-us"
 
 # ---------- Follow (YOLO ONNX) ----------
 ONNX_PATH = "yolo11n.onnx"
-YOLO_IMG_SIZE = 224
+YOLO_IMG_SIZE = 160  # Fixed by model constraint
 
 CAM_INDEX = 0
 FRAME_W, FRAME_H = 512, 288
@@ -362,8 +362,6 @@ def main():
                 h0, w0 = frame.shape[:2]
                 
                 # YOLO Inference
-                # Back to 160 because the ONNX model has fixed input dimensions
-                YOLO_IMG_SIZE = 160
                 img, scale, pad_w, pad_h = letterbox(frame, (YOLO_IMG_SIZE, YOLO_IMG_SIZE))
                 blob = to_blob(img)
                 outs = sess.run(out_names, {in_name: blob})
