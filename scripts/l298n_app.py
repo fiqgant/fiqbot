@@ -1,11 +1,12 @@
 import os
 os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
-os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")  # fix for some omp errors
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
 import time
 import threading
 import subprocess
 import random
+
 import cv2
 import numpy as np
 import onnxruntime as ort
@@ -17,30 +18,29 @@ from gpiozero.pins.lgpio import LGPIOFactory
 # CONFIG
 # =========================================================
 
-# ---------- Voice (Output Only) ----------
+# ---------- TTS ----------
 TTS_ENABLE = True
 TTS_LANG = "en-us"
+TTS_MIN_GAP = 2.0  # seconds between TTS to avoid spam
 
-# ---------- Follow (YOLO ONNX) ----------
+# ---------- YOLO ONNX ----------
 ONNX_PATH = "yolo11n.onnx"
-YOLO_IMG_SIZE = 320
 
 CAM_INDEX = 0
 FRAME_W, FRAME_H = 512, 288
 CAM_FPS = 60
 
-CONF_TH = 0.15  # Very low threshold for debugging
+CONF_TH = 0.25       # start with 0.25; for debugging try 0.15
 NMS_TH = 0.45
 PERSON_CLASS_ID = 0
 
 # ---------- L298N pins BCM ----------
 IN1, IN2, IN3, IN4 = 18, 19, 20, 21
 ENA, ENB = 12, 13
-
 MOTOR_B_FORWARD = IN4
 MOTOR_B_BACKWARD = IN3
 
-# ---------- Motor tuning ----------
+# ---------- Motor ----------
 MAX_SPEED = 0.80
 MIN_MOVE = 0.25
 
@@ -50,8 +50,8 @@ KP_FWD = 1.4
 
 TARGET_AREA = 0.22
 AREA_DEADBAND = 0.02
-X_DEADBAND = 0.06
 
+X_DEADBAND = 0.06
 TURN_LIMIT = 0.75
 TURN_MIN = 0.22
 INVERT_TURN = False
@@ -59,26 +59,24 @@ INVERT_TURN = False
 TARGET_LOST_GRACE = 1.5
 
 # ---------- Performance ----------
-INFER_EVERY_N_FRAMES = 1
+INFER_EVERY_N_FRAMES = 1  # set 2 kalau berat
 
 # ---------- UI ----------
 SHOW_UI = True
 WINDOW_NAME = "Neo Robot"
-
+UI_W, UI_H = 1280, 720     # window size (resizable)
+PIP_W, PIP_H = 320, 180    # camera picture-in-picture size
 
 # =========================================================
 # UTILS
 # =========================================================
-
 def clamp(x, lo, hi):
-    # Clamp x between lo and hi. Also force small values to 0.0
-    val = lo if x < lo else hi if x > hi else x
-    if abs(val) < 0.01:
-        return 0.0
-    return val
+    return lo if x < lo else hi if x > hi else x
+
 
 def sign(x):
     return 1.0 if x > 0 else -1.0 if x < 0 else 0.0
+
 
 def apply_min(v: float) -> float:
     if abs(v) < 0.01:
@@ -87,6 +85,7 @@ def apply_min(v: float) -> float:
         return MIN_MOVE if v > 0 else -MIN_MOVE
     return v
 
+
 def fit_to_window(frame, win_w, win_h):
     h, w = frame.shape[:2]
     win_w = int(win_w)
@@ -94,67 +93,61 @@ def fit_to_window(frame, win_w, win_h):
     if win_w <= 0 or win_h <= 0:
         return frame
     scale = min(win_w / w, win_h / h)
-    new_w = max(1, int(w * scale))
-    new_h = max(1, int(h * scale))
-    resized = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+    nw = max(1, int(w * scale))
+    nh = max(1, int(h * scale))
+    resized = cv2.resize(frame, (nw, nh), interpolation=cv2.INTER_LINEAR)
     canvas = np.zeros((win_h, win_w, 3), dtype=np.uint8)
-    x0 = (win_w - new_w) // 2
-    y0 = (win_h - new_h) // 2
-    canvas[y0:y0 + new_h, x0:x0 + new_w] = resized
+    x0 = (win_w - nw) // 2
+    y0 = (win_h - nh) // 2
+    canvas[y0:y0 + nh, x0:x0 + nw] = resized
     return canvas
 
-# ----------------- TTS -----------------
-def say(text: str):
-    if not TTS_ENABLE:
-        return
-    text = (text or "").strip()
-    if not text:
-        return
-    threading.Thread(target=_say_worker, args=(text,), daemon=True).start()
+
+# =========================================================
+# TTS
+# =========================================================
+_last_tts_t = 0.0
+
+NEO_RESPONSES = {
+    "found": ["Target found.", "I see you.", "Hello again.", "Target acquired."],
+    "lost":  ["Target lost.", "Where did you go?", "Searching.", "Scanning."],
+    "idle":  ["Systems idle.", "Waiting.", "Standing by."],
+    "quit":  ["Shutting down.", "Goodbye.", "Offline."]
+}
 
 def _say_worker(text: str):
     try:
         subprocess.Popen(
             ["espeak-ng", "-v", TTS_LANG, "-s", "160", text],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
         ).wait()
     except Exception:
         pass
 
-NEO_RESPONSES = {
-    "found": [
-        "Target found.",
-        "I see you.",
-        "Hello again.",
-        "Target acquired."
-    ],
-    "lost": [
-        "Target lost.",
-        "Where did you go?",
-        "Searching.",
-        "Scanning."
-    ],
-    "idle": [
-        "Patrol mode.",
-        "Systems idle.",
-        "Waiting."
-    ],
-    "quit": [
-        "Shutting down.",
-        "Goodbye.",
-        "Offline."
-    ]
-}
+def say(text: str):
+    global _last_tts_t
+    if not TTS_ENABLE:
+        return
+    text = (text or "").strip()
+    if not text:
+        return
+    now = time.time()
+    if now - _last_tts_t < TTS_MIN_GAP:
+        return
+    _last_tts_t = now
+    threading.Thread(target=_say_worker, args=(text,), daemon=True).start()
 
-def speak_response(key):
+def speak_response(key: str):
     if key in NEO_RESPONSES:
         say(random.choice(NEO_RESPONSES[key]))
 
-# ----------------- Motors -----------------
+
+# =========================================================
+# MOTORS (L298N)
+# =========================================================
 Device.pin_factory = LGPIOFactory()
-motor_a = Motor(forward=IN1, backward=IN2, enable=ENA, pwm=True)
-motor_b = Motor(forward=MOTOR_B_FORWARD, backward=MOTOR_B_BACKWARD, enable=ENB, pwm=True)
+motor_a = Motor(forward=IN1, backward=IN2, enable=ENA, pwm=True)  # left
+motor_b = Motor(forward=MOTOR_B_FORWARD, backward=MOTOR_B_BACKWARD, enable=ENB, pwm=True)  # right
 
 def stop_all():
     motor_a.stop()
@@ -170,110 +163,72 @@ def set_motor(motor: Motor, v: float):
     else:
         motor.backward(-v)
 
-# ----------------- EYES UI -----------------
+
+# =========================================================
+# EYES UI
+# =========================================================
 class FaceUI:
     def __init__(self, w, h):
-        self.w = w
-        self.h = h
+        self.w = int(w)
+        self.h = int(h)
         self.state = "neutral"  # neutral, happy, sad
-        self.blink_timer = 0.0
-        self.next_blink = time.time() + random.uniform(2, 5)
-        self.target_x = 0.0  # -1 to 1, target direction for pupil tracking
-        self.breath_phase = 0.0  # For breathing animation
+        self.blink_t = 0.0
+        self.next_blink = time.time() + random.uniform(2, 6)
+        self.target_x = 0.0
 
-    def draw(self, canvas, target_x=0.0):
-        """
-        Draw expressive eyes on canvas.
-        target_x: -1 (left) to 1 (right), direction where target is located
-        """
-        # Background black
-        canvas[:] = (0, 0, 0)
-        
-        now = time.time()
-        self.target_x = target_x
-        
-        # Breathing animation (subtle scale pulsing)
-        self.breath_phase = (now * 0.8) % (2 * np.pi)
-        breath_scale = 1.0 + 0.05 * np.sin(self.breath_phase)
-        
-        # Blink Logic
-        is_blink = False
-        if self.state == "neutral":
-            if now > self.next_blink:
-                self.blink_timer = now
-                self.next_blink = now + random.uniform(2, 8)
-            
-            if now - self.blink_timer < 0.15:
-                is_blink = True
-
-        # Colors
-        eye_color = (255, 255, 255)  # White
-        pupil_color = (50, 50, 50)  # Dark gray
-        
-        if self.state == "happy":
-            eye_color = (100, 255, 255)  # Cyan
-            pupil_color = (0, 200, 200)
-        elif self.state == "sad":
-            eye_color = (100, 100, 255)  # Blueish
-            pupil_color = (0, 0, 150)
-
-        # Eye positions - MORE SPACED OUT
-        cy = self.h // 2
-        cx1 = self.w // 4  # Left eye (1/4 from left)
-        cx2 = (self.w * 3) // 4  # Right eye (3/4 from left)
-        
-        # Eye dimensions
-        base_eye_w = int(50 * breath_scale)
-        base_eye_h = int(70 * breath_scale)
-        
-        if is_blink:
-            # Closed eyes (horizontal lines)
-            cv2.line(canvas, (cx1 - 50, cy), (cx1 + 50, cy), eye_color, 5)
-            cv2.line(canvas, (cx2 - 50, cy), (cx2 + 50, cy), eye_color, 5)
-            return
-
-        # State-specific rendering
-        if self.state == "neutral":
-            # Normal elliptical eyes with pupils
-            cv2.ellipse(canvas, (cx1, cy), (base_eye_w, base_eye_h), 0, 0, 360, eye_color, -1)
-            cv2.ellipse(canvas, (cx2, cy), (base_eye_w, base_eye_h), 0, 0, 360, eye_color, -1)
-            
-            # Pupils that follow target
-            pupil_offset_x = int(15 * self.target_x)
-            pupil_r = 15
-            cv2.circle(canvas, (cx1 + pupil_offset_x, cy), pupil_r, pupil_color, -1)
-            cv2.circle(canvas, (cx2 + pupil_offset_x, cy), pupil_r, pupil_color, -1)
-            
-        elif self.state == "happy":
-            # Wide open happy eyes (arcs pointing up)
-            eye_w = int(60 * breath_scale)
-            eye_h = int(50 * breath_scale)
-            
-            # Draw upper arc (happy eyes)
-            cv2.ellipse(canvas, (cx1, cy + 10), (eye_w, eye_h), 0, 180, 360, eye_color, -1)
-            cv2.ellipse(canvas, (cx2, cy + 10), (eye_w, eye_h), 0, 180, 360, eye_color, -1)
-            
-            # Pupils looking slightly up
-            pupil_offset_x = int(12 * self.target_x)
-            cv2.circle(canvas, (cx1 + pupil_offset_x, cy - 5), 12, pupil_color, -1)
-            cv2.circle(canvas, (cx2 + pupil_offset_x, cy - 5), 12, pupil_color, -1)
-            
-        elif self.state == "sad":
-            # Searching/sad eyes with horizontal movement
-            offset = int(25 * np.sin(now * 4))  # Faster scanning
-            
-            # Draw droopy eyes
-            cv2.ellipse(canvas, (cx1, cy - 10), (45, 40), 0, 0, 180, eye_color, -1)
-            cv2.ellipse(canvas, (cx2, cy - 10), (45, 40), 0, 0, 180, eye_color, -1)
-            
-            # Scanning pupils
-            cv2.circle(canvas, (cx1 + offset, cy), 12, pupil_color, -1)
-            cv2.circle(canvas, (cx2 + offset, cy), 12, pupil_color, -1)
-
-    def set_state(self, s):
+    def set_state(self, s: str):
         self.state = s
 
-# ----------------- Camera Thread -----------------
+    def draw(self, canvas, target_x=0.0):
+        canvas[:] = (0, 0, 0)
+        now = time.time()
+        self.target_x = float(clamp(target_x, -1.0, 1.0))
+
+        # blink
+        blink = False
+        if now > self.next_blink:
+            self.blink_t = now
+            self.next_blink = now + random.uniform(2, 7)
+        if now - self.blink_t < 0.12:
+            blink = True
+
+        # colors
+        if self.state == "happy":
+            eye_color = (120, 255, 255)
+            pupil_color = (0, 220, 220)
+        elif self.state == "sad":
+            eye_color = (150, 150, 255)
+            pupil_color = (60, 60, 180)
+        else:
+            eye_color = (255, 255, 255)
+            pupil_color = (60, 60, 60)
+
+        cy = self.h // 2
+        cx1 = self.w // 4
+        cx2 = (self.w * 3) // 4
+
+        eye_w = int(120)
+        eye_h = int(160)
+
+        if blink:
+            cv2.line(canvas, (cx1 - eye_w, cy), (cx1 + eye_w, cy), eye_color, 8)
+            cv2.line(canvas, (cx2 - eye_w, cy), (cx2 + eye_w, cy), eye_color, 8)
+            return
+
+        # eyes
+        cv2.ellipse(canvas, (cx1, cy), (eye_w, eye_h), 0, 0, 360, eye_color, -1)
+        cv2.ellipse(canvas, (cx2, cy), (eye_w, eye_h), 0, 0, 360, eye_color, -1)
+
+        # pupils follow target
+        pupil_dx = int(40 * self.target_x)
+        pupil_r = 30
+        cv2.circle(canvas, (cx1 + pupil_dx, cy), pupil_r, pupil_color, -1)
+        cv2.circle(canvas, (cx2 + pupil_dx, cy), pupil_r, pupil_color, -1)
+
+
+# =========================================================
+# CAMERA THREAD
+# =========================================================
 class CamThread:
     def __init__(self, index, w, h, fps):
         self.cap = cv2.VideoCapture(index, cv2.CAP_V4L2)
@@ -283,8 +238,8 @@ class CamThread:
         self.cap.set(cv2.CAP_PROP_FPS, fps)
         self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         if not self.cap.isOpened():
-             print("Warning: Camera not found")
-        
+            raise RuntimeError("Camera not opened. Check CAM_INDEX or /dev/video*")
+
         self.lock = threading.Lock()
         self.frame = None
         self.ok = False
@@ -294,9 +249,6 @@ class CamThread:
 
     def _loop(self):
         while not self.stopped:
-            if not self.cap.isOpened():
-                time.sleep(1)
-                continue
             self.cap.grab()
             ok, frm = self.cap.read()
             if not ok:
@@ -314,20 +266,40 @@ class CamThread:
 
     def release(self):
         self.stopped = True
-        try: self.t.join(timeout=1.0) 
-        except: pass
+        try:
+            self.t.join(timeout=1.0)
+        except Exception:
+            pass
         self.cap.release()
 
-# ----------------- YOLO -----------------
+
+# =========================================================
+# YOLO
+# =========================================================
 def create_ort_session(path):
     so = ort.SessionOptions()
     so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    so.intra_op_num_threads = 4
+    so.inter_op_num_threads = 1
     sess = ort.InferenceSession(path, sess_options=so, providers=["CPUExecutionProvider"])
-    return sess, sess.get_inputs()[0].name, [o.name for o in sess.get_outputs()]
+    in_name = sess.get_inputs()[0].name
+    out_names = [o.name for o in sess.get_outputs()]
 
-def letterbox(image, new_shape=(320, 320), color=(114, 114, 114)):
-    h, w = image.shape[:2]
+    # auto detect input size from model input shape [1,3,H,W]
+    shp = sess.get_inputs()[0].shape
+    img_size = 320
+    if isinstance(shp, list) and len(shp) == 4:
+        h = shp[2]
+        w = shp[3]
+        if isinstance(h, int) and isinstance(w, int) and h == w:
+            img_size = int(h)
+
+    return sess, in_name, out_names, img_size
+
+
+def letterbox(image, new_shape, color=(114, 114, 114)):
     nh, nw = new_shape
+    h, w = image.shape[:2]
     scale = min(nw / w, nh / h)
     new_w, new_h = int(round(w * scale)), int(round(h * scale))
     resized = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
@@ -337,195 +309,247 @@ def letterbox(image, new_shape=(320, 320), color=(114, 114, 114)):
     canvas[pad_h:pad_h + new_h, pad_w:pad_w + new_w] = resized
     return canvas, scale, pad_w, pad_h
 
+
 def to_blob(img):
     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     img = img.astype(np.float32) / 255.0
-    img = np.transpose(img, (2, 0, 1))
-    return np.expand_dims(img, 0)
+    img = np.transpose(img, (2, 0, 1))  # CHW
+    return np.expand_dims(img, 0)       # NCHW
 
-def parse_output(outs, conf_th):
-    out = np.array(outs[0])
-    if out.ndim == 3: out = out[0]
-    # N,6 format expected from YOLO11 usually
+
+def parse_output_any(outs, conf_th):
+    """
+    Supports:
+    - (N,6): x1,y1,x2,y2,score,cls
+    - (1,C,N) or (C,N) or (N,C): xywh + class scores
+    Returns boxes_xyxy in letterbox coords.
+    """
+    out = outs[0]
+    out = np.array(out)
+
+    if out.ndim == 3:
+        out = out[0]
+
+    # (N,6)
     if out.ndim == 2 and out.shape[1] >= 6:
-        boxes_xyxy = out[:, 0:4].astype(np.float32)
+        boxes = out[:, 0:4].astype(np.float32)
         scores = out[:, 4].astype(np.float32)
         cls = out[:, 5].astype(np.int32)
         keep = scores > conf_th
-        return boxes_xyxy[keep], scores[keep], cls[keep]
-    # Fallback/Other formats omitted for brevity unless needed
-    return np.zeros((0,4)), np.zeros((0,)), np.zeros((0,))
+        return boxes[keep], scores[keep], cls[keep]
+
+    # (C,N) or (N,C)
+    if out.ndim == 2:
+        if out.shape[0] < out.shape[1]:
+            out = out.transpose(1, 0)  # (N,C)
+
+        boxes_xywh = out[:, 0:4].astype(np.float32)
+        scores_all = out[:, 4:].astype(np.float32)
+        cls = np.argmax(scores_all, axis=1).astype(np.int32)
+        scores = scores_all[np.arange(scores_all.shape[0]), cls].astype(np.float32)
+        keep = scores > conf_th
+
+        boxes_xywh = boxes_xywh[keep]
+        scores = scores[keep]
+        cls = cls[keep]
+
+        boxes_xyxy = np.zeros((boxes_xywh.shape[0], 4), dtype=np.float32)
+        boxes_xyxy[:, 0] = boxes_xywh[:, 0] - boxes_xywh[:, 2] / 2.0
+        boxes_xyxy[:, 1] = boxes_xywh[:, 1] - boxes_xywh[:, 3] / 2.0
+        boxes_xyxy[:, 2] = boxes_xywh[:, 0] + boxes_xywh[:, 2] / 2.0
+        boxes_xyxy[:, 3] = boxes_xywh[:, 1] + boxes_xywh[:, 3] / 2.0
+        return boxes_xyxy, scores, cls
+
+    return (np.zeros((0, 4), dtype=np.float32),
+            np.zeros((0,), dtype=np.float32),
+            np.zeros((0,), dtype=np.int32))
 
 
-# ----------------- MAIN -----------------
+# =========================================================
+# MAIN
+# =========================================================
 def main():
     if not os.path.isfile(ONNX_PATH):
         raise RuntimeError(f"ONNX model not found: {ONNX_PATH}")
 
     cam = CamThread(CAM_INDEX, FRAME_W, FRAME_H, CAM_FPS)
-    sess, in_name, out_names = create_ort_session(ONNX_PATH)
-    print(f"Neo loaded. Input size: {YOLO_IMG_SIZE}")
+    sess, in_name, out_names, yolo_img = create_ort_session(ONNX_PATH)
+    print(f"Neo loaded. ONNX input size: {yolo_img}")
 
     if SHOW_UI:
         cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
-        # Default typical screen size
-        cv2.resizeWindow(WINDOW_NAME, 800, 480) 
+        cv2.resizeWindow(WINDOW_NAME, UI_W, UI_H)
         cv2.moveWindow(WINDOW_NAME, 0, 0)
 
-    # Face UI (full width for proper eye spacing)
-    face = FaceUI(FRAME_W, FRAME_H)
-    face_img = np.zeros((FRAME_H, FRAME_W, 3), dtype=np.uint8)
+    face = FaceUI(UI_W, UI_H)
+    face_img = np.zeros((UI_H, UI_W, 3), dtype=np.uint8)
 
     last_seen = 0.0
-    target_locked = False
-    
+    locked = False
     speak_response("idle")
-    
-    # Debug counter
-    frame_count = 0
+
+    frame_id = 0
+    ui_fps = 0.0
+    infer_fps = 0.0
+    prev_ui = time.time()
+    prev_inf = time.time()
 
     try:
         while True:
-            frame_count += 1
-            
-            # Track target direction for eyes
-            target_direction = 0.0  # -1 to 1
+            frame_id += 1
+            now = time.time()
+            target_dir = 0.0
 
-            # 2. Camera & Inference
             ok, frame = cam.read()
-            if ok and frame is not None:
-                h0, w0 = frame.shape[:2]
-                
-                # YOLO Inference
-                img, scale, pad_w, pad_h = letterbox(frame, (YOLO_IMG_SIZE, YOLO_IMG_SIZE))
+            if not ok or frame is None:
+                stop_all()
+                face.set_state("neutral")
+                face.draw(face_img, 0.0)
+                if SHOW_UI:
+                    cv2.imshow(WINDOW_NAME, face_img)
+                    if (cv2.waitKey(1) & 0xFF) == ord("q"):
+                        speak_response("quit")
+                        break
+                continue
+
+            h0, w0 = frame.shape[:2]
+
+            # default state
+            if not locked:
+                face.set_state("neutral")
+
+            # inference
+            person_boxes = []
+            person_scores = []
+
+            if (frame_id % INFER_EVERY_N_FRAMES) == 0:
+                img, scale, pad_w, pad_h = letterbox(frame, (yolo_img, yolo_img))
                 blob = to_blob(img)
                 outs = sess.run(out_names, {in_name: blob})
-                boxes, scores, cls = parse_output(outs, CONF_TH)
-                
-                # Debug: Show all detections
-                if frame_count % 30 == 0:
-                    print(f"DEBUG: Total detections: {len(boxes)} (all classes)")
-                    if len(boxes) > 0:
-                        print(f"  Classes detected: {set(cls.tolist())}")
-                        print(f"  Max score: {scores.max():.2f}")
-                
-                # Filter Persons
+                boxes_lb, scores, cls = parse_output_any(outs, CONF_TH)
+
+                # filter person
                 mask = (cls == PERSON_CLASS_ID)
-                boxes = boxes[mask]
+                boxes_lb = boxes_lb[mask]
                 scores = scores[mask]
-                
-                if frame_count % 30 == 0:
-                    print(f"  Persons filtered: {len(boxes)}")
 
-                # AUTO FOLLOW LOGIC
-                if len(boxes) > 0:
-                    # Pick best target (largest area)
-                    areas = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
-                    best_idx = np.argmax(areas)
-                    x1_l, y1_l, x2_l, y2_l = boxes[best_idx]
-                    best_score = scores[best_idx]
-                    
-                    if frame_count % 30 == 0:
-                        print(f"DEBUG: Person detected! Score: {best_score:.2f} Area: {areas[best_idx]:.0f}")
-                    
-                    # Transform back coords
-                    x1 = (x1_l - pad_w) / scale
-                    x2 = (x2_l - pad_w) / scale
-                    cx_l = (x1 + x2) * 0.5
-                    
-                    # Logic
-                    if not target_locked:
-                        target_locked = True
-                        speak_response("found")
-                    
+                # NMS
+                if boxes_lb.shape[0] > 0:
+                    nms_boxes = []
+                    nms_scores = []
+                    for i in range(boxes_lb.shape[0]):
+                        x1, y1, x2, y2 = boxes_lb[i]
+                        nms_boxes.append([float(x1), float(y1), float(x2 - x1), float(y2 - y1)])
+                        nms_scores.append(float(scores[i]))
+
+                    idxs = cv2.dnn.NMSBoxes(nms_boxes, nms_scores, CONF_TH, NMS_TH)
+                    if len(idxs) > 0:
+                        for j in idxs.flatten().tolist():
+                            x1_l, y1_l, w_l, h_l = nms_boxes[j]
+                            x2_l = x1_l + w_l
+                            y2_l = y1_l + h_l
+
+                            # back to original coords
+                            x1 = (x1_l - pad_w) / scale
+                            y1 = (y1_l - pad_h) / scale
+                            x2 = (x2_l - pad_w) / scale
+                            y2 = (y2_l - pad_h) / scale
+
+                            x1 = clamp(x1, 0, w0 - 1)
+                            x2 = clamp(x2, 0, w0 - 1)
+                            y1 = clamp(y1, 0, h0 - 1)
+                            y2 = clamp(y2, 0, h0 - 1)
+
+                            person_boxes.append((float(x1), float(y1), float(x2), float(y2)))
+                            person_scores.append(nms_scores[j])
+
+                dt_inf = now - prev_inf
+                if dt_inf > 0:
+                    infer_fps = 0.9 * infer_fps + 0.1 * (1.0 / dt_inf) if infer_fps > 0 else (1.0 / dt_inf)
+                prev_inf = now
+
+            # choose target: largest area
+            if person_boxes:
+                areas = [ (b[2]-b[0]) * (b[3]-b[1]) for b in person_boxes ]
+                best_i = int(np.argmax(np.array(areas)))
+                x1, y1, x2, y2 = person_boxes[best_i]
+                cx = (x1 + x2) * 0.5
+
+                err_x = (cx - (w0 * 0.5)) / (w0 * 0.5)  # -1..1
+                if INVERT_TURN:
+                    err_x = -err_x
+                if abs(err_x) < X_DEADBAND:
+                    err_x = 0.0
+
+                target_dir = float(clamp(err_x, -1.0, 1.0))
+
+                area_norm = ((x2 - x1) * (y2 - y1)) / float(w0 * h0)
+                err_a = (TARGET_AREA - area_norm)
+                if abs(err_a) < AREA_DEADBAND:
+                    err_a = 0.0
+
+                base = KP_FWD * err_a
+                turn = KP_TURN * err_x
+
+                # ensure turning shows up
+                if err_x != 0.0 and abs(turn) < TURN_MIN:
+                    turn = TURN_MIN * sign(err_x)
+                turn = clamp(turn, -TURN_LIMIT, TURN_LIMIT)
+
+                left = apply_min(base + turn)
+                right = apply_min(base - turn)
+
+                set_motor(motor_a, left)
+                set_motor(motor_b, right)
+
+                last_seen = now
+                if not locked:
+                    locked = True
                     face.set_state("happy")
-                    last_seen = time.time()
-                    
-                    # Motion Control
-                    err_x = (cx_l - (w0 * 0.5)) / (w0 * 0.5)
-                    target_direction = err_x  # Pass to eyes for pupil tracking
-                    
-                    # Approx area norm
-                    area_norm = areas[best_idx] / (scale * scale) / (w0 * h0)
-                    err_a = (TARGET_AREA - area_norm)
-
-                    # Simple P-control
-                    turn = KP_TURN * err_x
-                    fwd = KP_FWD * err_a
-                    
-                    # Clamp
-                    turn = clamp(turn, -TURN_LIMIT, TURN_LIMIT)
-                    if abs(fwd) < AREA_DEADBAND: fwd = 0.0
-                    
-                    left = apply_min(fwd + turn)
-                    right = apply_min(fwd - turn)
-                    set_motor(motor_a, left)
-                    set_motor(motor_b, right)
-
+                    speak_response("found")
                 else:
-                    # No person found
-                    if frame_count % 60 == 0:
-                        print("DEBUG: Scan - No person.")
+                    face.set_state("happy")
 
-                    if target_locked:
-                        if time.time() - last_seen > TARGET_LOST_GRACE:
-                            target_locked = False
-                            speak_response("lost")
-                            face.set_state("sad")
-                            stop_all()
-                    else:
-                        face.set_state("neutral")
-                        stop_all()
-            
-            # 1. Update Face with target direction
-            face.draw(face_img, target_direction)
-            
-            # Show UI
+            else:
+                # lost logic
+                if locked and (now - last_seen) > TARGET_LOST_GRACE:
+                    locked = False
+                    stop_all()
+                    face.set_state("sad")
+                    speak_response("lost")
+                elif not locked:
+                    stop_all()
+                    face.set_state("neutral")
+
+            # draw face
+            face.draw(face_img, target_dir)
+
+            # draw PIP camera + bbox
             if SHOW_UI:
-                # Decide what to show. 
-                # Option A: Only Face.
-                # Option B: Camera overlay.
-                # Let's show Face primarily, maybe small cam in corner?
-                
-                final_vis = face_img.copy()
-                
-                # Small camera PIP with bounding boxes
-                if ok and frame is not None:
-                    # Draw debug bounding boxes on frame
-                    debug_frame = frame.copy()
-                    
-                    # Draw ALL detections in gray (before filtering)
-                    if len(boxes) > 0:
-                        all_boxes_orig = boxes  # These are already person-filtered at this point
-                        # We need to re-parse to get ALL boxes
-                        # Let's just draw the person boxes in green
-                        for i, box in enumerate(boxes):
-                            x1, y1, x2, y2 = box
-                            # Transform back to original coords
-                            x1 = int((x1 - pad_w) / scale)
-                            y1 = int((y1 - pad_h) / scale)
-                            x2 = int((x2 - pad_w) / scale)
-                            y2 = int((y2 - pad_h) / scale)
-                            
-                            # Clamp to frame
-                            x1 = max(0, min(x1, w0))
-                            y1 = max(0, min(y1, h0))
-                            x2 = max(0, min(x2, w0))
-                            y2 = max(0, min(y2, h0))
-                            
-                            # Draw person box in green
-                            cv2.rectangle(debug_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                            cv2.putText(debug_frame, f"P {scores[i]:.2f}", (x1, y1 - 5),
-                                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-                    
-                    # Resize to PIP size
-                    small_cam = cv2.resize(debug_frame, (160, 90))
-                    final_vis[0:90, 0:160] = small_cam
+                pip = frame.copy()
+                # draw center line
+                cv2.line(pip, (w0 // 2, 0), (w0 // 2, h0), (0, 255, 255), 2)
 
-                show = fit_to_window(final_vis, 800, 480)
-                cv2.imshow(WINDOW_NAME, show)
-                
-                if (cv2.waitKey(1) & 0xFF) == ord('q'):
+                # draw persons
+                for b in person_boxes:
+                    x1, y1, x2, y2 = map(int, b)
+                    cv2.rectangle(pip, (x1, y1), (x2, y2), (0, 255, 0), 2)
+
+                pip_small = cv2.resize(pip, (PIP_W, PIP_H), interpolation=cv2.INTER_LINEAR)
+                face_img[0:PIP_H, 0:PIP_W] = pip_small
+
+                # HUD
+                dt_ui = now - prev_ui
+                if dt_ui > 0:
+                    ui_fps = 0.9 * ui_fps + 0.1 * (1.0 / dt_ui) if ui_fps > 0 else (1.0 / dt_ui)
+                prev_ui = now
+
+                status = "TRACK" if locked else "IDLE"
+                cv2.putText(face_img, f"{status} | UI {ui_fps:.1f} | INFER {infer_fps:.1f}",
+                            (10, UI_H - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+
+                cv2.imshow(WINDOW_NAME, face_img)
+                if (cv2.waitKey(1) & 0xFF) == ord("q"):
                     speak_response("quit")
                     break
 
@@ -533,13 +557,17 @@ def main():
         pass
     finally:
         stop_all()
-        # Clean shutdown
-        try: motor_a.close() 
-        except: pass
-        try: motor_b.close() 
-        except: pass
+        try:
+            motor_a.close()
+            motor_b.close()
+        except Exception:
+            pass
         cam.release()
-        cv2.destroyAllWindows()
+        try:
+            cv2.destroyAllWindows()
+        except Exception:
+            pass
+
 
 if __name__ == "__main__":
     main()
