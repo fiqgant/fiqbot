@@ -1,6 +1,6 @@
 import os
 os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
-os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")  # fix for some omp errors
 
 import time
 import threading
@@ -23,13 +23,13 @@ TTS_LANG = "en-us"
 
 # ---------- Follow (YOLO ONNX) ----------
 ONNX_PATH = "yolo11n.onnx"
-YOLO_IMG_SIZE = 160
+YOLO_IMG_SIZE = 224
 
 CAM_INDEX = 0
 FRAME_W, FRAME_H = 512, 288
 CAM_FPS = 60
 
-CONF_TH = 0.35
+CONF_TH = 0.25
 NMS_TH = 0.45
 PERSON_CLASS_ID = 0
 
@@ -94,13 +94,13 @@ def fit_to_window(frame, win_w, win_h):
     if win_w <= 0 or win_h <= 0:
         return frame
     scale = min(win_w / w, win_h / h)
-    nw = max(1, int(w * scale))
-    nh = max(1, int(h * scale))
-    resized = cv2.resize(frame, (nw, nh), interpolation=cv2.INTER_LINEAR)
+    new_w = max(1, int(w * scale))
+    new_h = max(1, int(h * scale))
+    resized = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
     canvas = np.zeros((win_h, win_w, 3), dtype=np.uint8)
-    x0 = (win_w - nw) // 2
-    y0 = (win_h - nh) // 2
-    canvas[y0:y0 + nh, x0:x0 + nw] = resized
+    x0 = (win_w - new_w) // 2
+    y0 = (win_h - new_h) // 2
+    canvas[y0:y0 + new_h, x0:x0 + new_w] = resized
     return canvas
 
 # ----------------- TTS -----------------
@@ -338,16 +338,21 @@ def main():
         cv2.moveWindow(WINDOW_NAME, 0, 0)
 
     # Face UI
-    face = FaceUI(FRAME_W, FRAME_H)
-    face_img = np.zeros((FRAME_H, FRAME_W, 3), dtype=np.uint8)
+    face = FaceUI(FRAME_H, FRAME_H) # Changed to square for face
+    face_img = np.zeros((FRAME_H, FRAME_H, 3), dtype=np.uint8) # Changed to square for face
 
     last_seen = 0.0
     target_locked = False
     
     speak_response("idle")
+    
+    # Debug counter
+    frame_count = 0
 
     try:
         while True:
+            frame_count += 1
+            
             # 1. Update Face (Independent of camera sometimes)
             face.draw(face_img)
 
@@ -373,6 +378,10 @@ def main():
                     areas = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
                     best_idx = np.argmax(areas)
                     x1_l, y1_l, x2_l, y2_l = boxes[best_idx]
+                    best_score = scores[best_idx]
+                    
+                    if frame_count % 30 == 0:
+                        print(f"DEBUG: Person detected! Score: {best_score:.2f} Area: {areas[best_idx]:.0f}")
                     
                     # Transform back coords
                     x1 = (x1_l - pad_w) / scale
@@ -408,6 +417,9 @@ def main():
 
                 else:
                     # No person found
+                    if frame_count % 60 == 0:
+                        print("DEBUG: Scan - No person.")
+
                     if target_locked:
                         if time.time() - last_seen > TARGET_LOST_GRACE:
                             target_locked = False
