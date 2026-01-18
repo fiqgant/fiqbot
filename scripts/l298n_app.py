@@ -33,7 +33,7 @@ SAMPLE_RATE = 16000
 MIC_DEVICE_INDEX = None
 
 # Wakeword (in Indonesian context)
-WAKE_WORDS = ["nil", "neil", "nel", "niel", "halo", "bro"]
+WAKE_WORDS = ["neo", "nio", "new", "nioh", "halo", "bro"]
 WAKE_TIMEOUT_S = 8.0
 WAKE_COOLDOWN_S = 1.0
 
@@ -98,7 +98,7 @@ INFER_EVERY_N_FRAMES = 1  # set 2 for less CPU
 
 # ---------- UI ----------
 SHOW_UI = True
-WINDOW_NAME = "Neil Robot"
+WINDOW_NAME = "Neo Robot"
 DRAW_ALL_PERSONS = False
 VERBOSE_VOICE_PRINT = True   # print recognized text/events to terminal
 
@@ -181,12 +181,12 @@ def say(text: str):
         pass
 
 
-NEIL_RESPONSES = {
+NEO_RESPONSES = {
     "ready": [
-        "Sistem siap. Neil online.",
-        "Halo, saya siap membantu.",
+        "Sistem siap. Neo online.",
+        "Halo, Neo siap membantu.",
         "Semua sistem aman. Menunggu perintah.",
-        "Neil aktif. Silakan."
+        "Neo aktif. Silakan."
     ],
     "wake": [
         "Ya? Saya mendengarkan.",
@@ -261,12 +261,12 @@ NEIL_RESPONSES = {
 
 def speak_response(key, **kwargs):
     """
-    Pick a random response from NEIL_RESPONSES[key].
+    Pick a random response from NEO_RESPONSES[key].
     If key is not found, treat it as raw text.
     Supports wrapping with .format(**kwargs).
     """
-    if key in NEIL_RESPONSES:
-        text = random.choice(NEIL_RESPONSES[key])
+    if key in NEO_RESPONSES:
+        text = random.choice(NEO_RESPONSES[key])
         if kwargs:
             try:
                 text = text.format(**kwargs)
@@ -516,7 +516,7 @@ def strip_wake(text: str) -> str:
 
 def has_wake(text: str) -> bool:
     t = normalize_text(text)
-    # substring check is more robust ("hey neil", "neil forward")
+    # substring check is more robust ("hey neo", "neo forward")
     return any(w in t for w in WAKE_WORDS)
 
 def strip_wake(text: str) -> str:
@@ -975,10 +975,10 @@ def main():
                     st = "LOCKED" if locked else "UNLOCKED"
                     cv2.putText(vis, f"FOLLOW {st} | Gesture {gesture}",
                                 (10, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-                    cv2.putText(vis, "OPEN palm=LOCK | FIST=UNLOCK | say 'Neil' then follow/manual/idle",
+                    cv2.putText(vis, "OPEN palm=LOCK | FIST=UNLOCK | say 'Neo' then follow/manual/idle",
                                 (10, h0 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
                 else:
-                    cv2.putText(vis, "Say 'Neil' then: follow/manual/idle/forward/back/left/right/stop",
+                    cv2.putText(vis, "Say 'Neo' then: follow/manual/idle/forward/back/left/right/stop",
                                 (10, h0 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
 
                 show = fit_to_window(vis, win_w, win_h)
