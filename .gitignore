@@ -1,5 +1,5 @@
 # =========================
-# Python / venv
+# Python / Environment
 # =========================
 __pycache__/
 *.py[cod]
@@ -7,10 +7,10 @@ __pycache__/
 .venv/
 venv/
 env/
-robot/          # venv kamu
+robot/
 
 # =========================
-# OS / editor
+# IDE / OS
 # =========================
 .DS_Store
 Thumbs.db
@@ -18,14 +18,14 @@ Thumbs.db
 .idea/
 
 # =========================
-# Logs / temp
+# Logs / Temp
 # =========================
 *.log
 *.tmp
 *.swp
 
 # =========================
-# Ultralytics / YOLO outputs
+# AI Models / Outputs
 # =========================
 runs/
 *.pt
@@ -37,11 +37,8 @@ runs/
 *.bin
 yolo11n_ncnn_model/
 
-# Kalau kamu mau tetap simpan model tertentu, hapus baris *.pt / *.onnx
-# lalu ignore per-folder saja.
-
 # =========================
-# Media / recordings
+# Media / Recordings
 # =========================
 *.mp4
 *.avi
@@ -54,18 +51,3 @@ yolo11n_ncnn_model/
 # Jupyter
 # =========================
 .ipynb_checkpoints/
-robot/
-# venv
-robot/
-.venv/
-venv/
-
-# models / outputs
-yolo11n_ncnn_model/
-*.pt
-*.onnx
-runs/
-
-# cache
-__pycache__/
-*.pyc

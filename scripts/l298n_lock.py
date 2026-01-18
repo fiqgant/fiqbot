@@ -1,3 +1,4 @@
+import os
 import time
 import threading
 import cv2
@@ -11,7 +12,20 @@ from gpiozero.pins.lgpio import LGPIOFactory
 # =========================
 # CONFIGURATION
 # =========================
-ONNX_PATH = "yolo11n.onnx"
+
+# Helper: Find model source
+def get_model_path(filename):
+    # Check same directory as script
+    p = os.path.join(os.path.dirname(__file__), filename)
+    if os.path.exists(p):
+        return p
+    # Check parent directory (project root)
+    p = os.path.join(os.path.dirname(os.path.dirname(__file__)), filename)
+    if os.path.exists(p):
+        return p
+    return filename
+
+ONNX_PATH = get_model_path("yolo11n.onnx")
 
 CAM_INDEX = 0
 FRAME_W, FRAME_H = 512, 288

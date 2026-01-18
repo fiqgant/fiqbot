@@ -134,32 +134,33 @@ python scripts/l298n_lock.py
 
 ## 📂 Project Structure
 
-```plaintext
 fiqbot/
-├── scripts/
-│   ├── l298n_cam_stream.py   # Web control server with camera feed
-│   ├── l298n_control.py      # Terminal-based remote control
-│   ├── l298n_lock.py         # Gesture-based target locking AI
-│   ├── l298n_yolo.py         # Basic person following AI
-│   └── l298n_test.py         # Hardware diagnostic script
-├── assets/
-│   ├── wiring_bb.png         # Wiring diagram
-│   └── wiring.fzz            # Fritzing file
-├── requirements.txt          # Python dependencies
-└── README.md                 # Documentation
+├── scripts/              # Python source code
+│   ├── l298n_yolo.py     # AI Person Following
+│   ├── l298n_lock.py     # AI Gesture Lock
+│   ├── ...               # Other scripts
+├── assets/               # Diagrams & images
+│   ├── wiring_bb.png
+│   └── wiring.fzz
+├── LICENSE               # MIT License
+├── requirements.txt      # Dependencies
+└── README.md             # Documentation
 ```
 
 ---
 
 ## ❓ Troubleshooting
 
-- **Motors not moving?**
-  - Check if the 12V power switch is ON.
-  - Verify grounds are connected between Pi and L298N.
-- **"Camera not found" error?**
-  - Verify `CAM_INDEX = 0` in the scripts. Try changing it to `1` or `-1`.
 - **GPIO errors?**
   - Ensure you are using `lgpio` on Raspberry Pi 5. Run `rpi-update` if needed.
+- **Model not found?**
+  - The scripts look for `yolo11n.onnx` in the `scripts/` folder OR the **project root**. Ensure it exists in one of those locations.
+
+---
+
+## 📜 License
+
+This project is licensed under the **MIT License**. See the [LICENSE](LICENSE) file for details.
 
 ---
 
