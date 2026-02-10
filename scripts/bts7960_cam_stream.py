@@ -1,9 +1,10 @@
 import time
 import threading
 from dataclasses import dataclass
+
+import cv2
 from flask import Flask, request, jsonify, Response
 from gpiozero import PWMOutputDevice
-import cv2
 
 # =========================
 # CONFIG
@@ -11,35 +12,47 @@ import cv2
 HOST = "0.0.0.0"
 PORT = 5000
 
-# Kamera
+# Camera
 CAM_INDEX = 0
 FRAME_W = 640
 FRAME_H = 480
 JPEG_QUALITY = 80
 
 # BTS7960 pins (BCM)
+# LEFT
 L_RPWM = 18
 L_LPWM = 23
+# RIGHT
 R_RPWM = 13
 R_LPWM = 24
 
-PWM_FREQ = 200
+PWM_FREQ = 200          # software PWM freq
 MAX_SPEED = 0.85
-WATCHDOG_TIMEOUT = 0.6
-TURN_RATIO = 0.75
+TURN_RATIO = 0.75       # turning strength relative to speed
+WATCHDOG_TIMEOUT = 0.6  # seconds: auto STOP if no command
 
 # =========================
-# MOTOR DRIVER
+# Helpers
 # =========================
 def clamp(v, lo, hi):
     return max(lo, min(hi, v))
 
+# =========================
+# Motor driver (BTS7960) using gpiozero SOFTWARE PWM
+# =========================
 class BTS7960:
     def __init__(self, rpwm_pin, lpwm_pin, freq=200):
-        self.rpwm = PWMOutputDevice(rpwm_pin, frequency=freq, initial_value=0.0)
-        self.lpwm = PWMOutputDevice(lpwm_pin, frequency=freq, initial_value=0.0)
+        # IMPORTANT on Raspberry Pi 5:
+        # Force software PWM to avoid "pwm not supported on gpioXX"
+        self.rpwm = PWMOutputDevice(
+            rpwm_pin, frequency=freq, initial_value=0.0, pwm=True
+        )
+        self.lpwm = PWMOutputDevice(
+            lpwm_pin, frequency=freq, initial_value=0.0, pwm=True
+        )
 
     def set_speed(self, s):
+        # s in [-1..1]
         s = clamp(s, -1.0, 1.0)
         if s >= 0:
             self.rpwm.value = s
@@ -56,6 +69,10 @@ left_motor = BTS7960(L_RPWM, L_LPWM, PWM_FREQ)
 right_motor = BTS7960(R_RPWM, R_LPWM, PWM_FREQ)
 
 def drive_tank(speed, turn):
+    """
+    speed: -1..1 (forward/back)
+    turn:  -1..1 (left/right). negative=left, positive=right
+    """
     speed = clamp(speed, -1.0, 1.0)
     turn = clamp(turn, -1.0, 1.0)
 
@@ -70,7 +87,7 @@ def stop_all():
     right_motor.stop()
 
 # =========================
-# STATE + WATCHDOG
+# State + Watchdog
 # =========================
 @dataclass
 class ControlState:
@@ -81,7 +98,12 @@ class ControlState:
 state = ControlState()
 lock = threading.Lock()
 
-def watchdog():
+def touch(cmd):
+    with lock:
+        state.last_cmd = cmd
+        state.last_cmd_ts = time.time()
+
+def watchdog_loop():
     while True:
         time.sleep(0.05)
         with lock:
@@ -91,15 +113,10 @@ def watchdog():
         if time.time() - last > WATCHDOG_TIMEOUT:
             stop_all()
 
-threading.Thread(target=watchdog, daemon=True).start()
-
-def touch(cmd):
-    with lock:
-        state.last_cmd = cmd
-        state.last_cmd_ts = time.time()
+threading.Thread(target=watchdog_loop, daemon=True).start()
 
 # =========================
-# CAMERA (thread-safe)
+# Camera thread
 # =========================
 cap = cv2.VideoCapture(CAM_INDEX)
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_W)
@@ -107,7 +124,7 @@ cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_H)
 
 frame_lock = threading.Lock()
 latest_frame = None
-camera_ok = True
+camera_ok = False
 
 def camera_loop():
     global latest_frame, camera_ok
@@ -133,7 +150,9 @@ def mjpeg_generator():
             time.sleep(0.05)
             continue
 
-        ok, jpg = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY])
+        ok, jpg = cv2.imencode(
+            ".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY]
+        )
         if not ok:
             continue
 
@@ -141,7 +160,7 @@ def mjpeg_generator():
                b"Content-Type: image/jpeg\r\n\r\n" + jpg.tobytes() + b"\r\n")
 
 # =========================
-# FLASK APP
+# Flask app
 # =========================
 app = Flask(__name__)
 
@@ -155,14 +174,17 @@ def index():
   <title>Rover Control</title>
   <style>
     body {{ font-family: system-ui, Arial; margin: 14px; }}
-    .wrap {{ max-width: 720px; margin: auto; }}
-    .row {{ display:flex; gap:12px; flex-wrap: wrap; }}
-    .cam {{ width: 100%; max-width: 720px; border-radius: 12px; border:1px solid #ccc; }}
+    .wrap {{ max-width: 760px; margin: auto; }}
+    .cam {{ width: 100%; max-width: 760px; border-radius: 14px; border:1px solid #ccc; }}
     .grid {{ display:grid; grid-template-columns: 1fr 1fr 1fr; gap:10px; max-width:420px; }}
-    button {{ padding: 16px 12px; font-size: 18px; border-radius: 12px; border:1px solid #ccc; background:#f7f7f7; }}
+    button {{
+      padding: 16px 12px; font-size: 18px; border-radius: 12px;
+      border:1px solid #ccc; background:#f7f7f7;
+    }}
     button:active {{ transform: scale(0.98); }}
     input[type=range] {{ width: 100%; max-width:420px; }}
     .status {{ margin-top:10px; padding:10px; border-radius:12px; background:#f2f2ff; }}
+    .hint {{ color:#555; font-size: 13px; margin-top: 6px; }}
   </style>
 </head>
 <body>
@@ -174,6 +196,7 @@ def index():
   <div style="margin:12px 0;">
     <label>Speed: <span id="spdVal">0.35</span></label><br>
     <input id="spd" type="range" min="0" max="1" step="0.01" value="0.35">
+    <div class="hint">Tekan & tahan tombol untuk jalan, lepas = stop (lebih aman).</div>
   </div>
 
   <div class="grid">
@@ -201,8 +224,8 @@ def index():
   spd.addEventListener('input', async () => {{
     spdVal.textContent = spd.value;
     await fetch('/speed', {{
-      method: 'POST',
-      headers: {{'Content-Type': 'application/json'}},
+      method:'POST',
+      headers: {{'Content-Type':'application/json'}},
       body: JSON.stringify({{speed: parseFloat(spd.value)}})
     }});
   }});
@@ -240,14 +263,14 @@ def status():
     return jsonify(speed=spd, last_cmd=last_cmd, last_cmd_age_s=age, camera_ok=camera_ok)
 
 @app.post("/speed")
-def speed():
+def api_speed():
     data = request.get_json(force=True, silent=True) or {}
     with lock:
         state.speed = clamp(float(data.get("speed", 0.35)), 0.0, 1.0)
     return jsonify(ok=True, speed=state.speed)
 
 @app.post("/cmd")
-def cmd():
+def api_cmd():
     data = request.get_json(force=True, silent=True) or {}
     cmd = str(data.get("cmd", "stop")).lower()
 
@@ -275,4 +298,8 @@ def cmd():
 if __name__ == "__main__":
     stop_all()
     print(f"Open: http://<IP_RPI>:{PORT}")
-    app.run(host=HOST, port=PORT, debug=False, threaded=True)
+    try:
+        app.run(host=HOST, port=PORT, debug=False, threaded=True)
+    finally:
+        stop_all()
+        cap.release()
