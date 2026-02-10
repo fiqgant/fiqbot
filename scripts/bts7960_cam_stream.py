@@ -1,17 +1,9 @@
 import time
 import threading
-from dataclasses import dataclass
-
-import cv2
 from flask import Flask, request, jsonify, Response
+import cv2
 
-from gpiozero import PWMOutputDevice, Device
-from gpiozero.pins.pigpio import PiGPIOFactory
-
-# =========================
-# FORCE gpiozero WITHOUT lgpio
-# =========================
-Device.pin_factory = PiGPIOFactory()  # requires pigpiod running
+from gpiozero import DigitalOutputDevice
 
 # =========================
 # CONFIG
@@ -26,89 +18,91 @@ FRAME_H = 480
 JPEG_QUALITY = 80
 
 # BTS7960 pins (BCM)
+# LEFT
 L_RPWM = 18
 L_LPWM = 23
+# RIGHT
 R_RPWM = 13
 R_LPWM = 24
 
-PWM_FREQ = 200
-MAX_SPEED = 0.85
-TURN_RATIO = 0.75
-WATCHDOG_TIMEOUT = 0.6
+# Safety watchdog
+WATCHDOG_TIMEOUT = 0.6  # seconds
 
 # =========================
-# Helpers
+# MOTOR DRIVER (NO PWM)
 # =========================
-def clamp(v, lo, hi):
-    return max(lo, min(hi, v))
+class BTS7960_ONOFF:
+    """
+    Control BTS7960 using ON/OFF only:
+    - Forward: RPWM=1, LPWM=0
+    - Reverse: RPWM=0, LPWM=1
+    - Stop:    RPWM=0, LPWM=0
+    """
+    def __init__(self, rpwm_pin: int, lpwm_pin: int):
+        self.rpwm = DigitalOutputDevice(rpwm_pin, initial_value=False)
+        self.lpwm = DigitalOutputDevice(lpwm_pin, initial_value=False)
 
-# =========================
-# Motor driver
-# =========================
-class BTS7960:
-    def __init__(self, rpwm_pin, lpwm_pin, freq=200):
-        self.rpwm = PWMOutputDevice(rpwm_pin, frequency=freq, initial_value=0.0)
-        self.lpwm = PWMOutputDevice(lpwm_pin, frequency=freq, initial_value=0.0)
+    def forward(self):
+        self.rpwm.on()
+        self.lpwm.off()
 
-    def set_speed(self, s):
-        s = clamp(s, -1.0, 1.0)
-        if s >= 0:
-            self.rpwm.value = s
-            self.lpwm.value = 0.0
-        else:
-            self.rpwm.value = 0.0
-            self.lpwm.value = -s
+    def reverse(self):
+        self.rpwm.off()
+        self.lpwm.on()
 
     def stop(self):
-        self.rpwm.value = 0.0
-        self.lpwm.value = 0.0
+        self.rpwm.off()
+        self.lpwm.off()
 
-left_motor = BTS7960(L_RPWM, L_LPWM, PWM_FREQ)
-right_motor = BTS7960(R_RPWM, R_LPWM, PWM_FREQ)
-
-def drive_tank(speed, turn):
-    speed = clamp(speed, -1.0, 1.0)
-    turn = clamp(turn, -1.0, 1.0)
-
-    left = clamp(speed - turn, -MAX_SPEED, MAX_SPEED)
-    right = clamp(speed + turn, -MAX_SPEED, MAX_SPEED)
-
-    left_motor.set_speed(left)
-    right_motor.set_speed(right)
+left_motor = BTS7960_ONOFF(L_RPWM, L_LPWM)
+right_motor = BTS7960_ONOFF(R_RPWM, R_LPWM)
 
 def stop_all():
     left_motor.stop()
     right_motor.stop()
 
-# =========================
-# State + Watchdog
-# =========================
-@dataclass
-class ControlState:
-    speed: float = 0.35
-    last_cmd_ts: float = 0.0
-    last_cmd: str = "stop"
+def cmd_forward():
+    left_motor.forward()
+    right_motor.forward()
 
-state = ControlState()
+def cmd_back():
+    left_motor.reverse()
+    right_motor.reverse()
+
+def cmd_left_spin():
+    # spin left: left reverse, right forward
+    left_motor.reverse()
+    right_motor.forward()
+
+def cmd_right_spin():
+    left_motor.forward()
+    right_motor.reverse()
+
+# =========================
+# WATCHDOG
+# =========================
+last_cmd_ts = 0.0
+last_cmd = "stop"
 lock = threading.Lock()
 
-def touch(cmd):
+def touch(cmd: str):
+    global last_cmd_ts, last_cmd
     with lock:
-        state.last_cmd = cmd
-        state.last_cmd_ts = time.time()
+        last_cmd = cmd
+        last_cmd_ts = time.time()
 
 def watchdog_loop():
     while True:
         time.sleep(0.05)
         with lock:
-            last = state.last_cmd_ts
-        if last and (time.time() - last > WATCHDOG_TIMEOUT):
+            ts = last_cmd_ts
+        if ts and (time.time() - ts > WATCHDOG_TIMEOUT):
             stop_all()
 
 threading.Thread(target=watchdog_loop, daemon=True).start()
 
 # =========================
-# Camera thread
+# CAMERA THREAD
 # =========================
 cap = cv2.VideoCapture(CAM_INDEX)
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_W)
@@ -141,9 +135,7 @@ def mjpeg_generator():
             time.sleep(0.05)
             continue
 
-        ok, jpg = cv2.imencode(
-            ".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY]
-        )
+        ok, jpg = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY])
         if not ok:
             continue
 
@@ -151,7 +143,7 @@ def mjpeg_generator():
                b"Content-Type: image/jpeg\r\n\r\n" + jpg.tobytes() + b"\r\n")
 
 # =========================
-# Flask app
+# FLASK APP
 # =========================
 app = Flask(__name__)
 
@@ -170,21 +162,17 @@ def index():
     .grid { display:grid; grid-template-columns: 1fr 1fr 1fr; gap:10px; max-width:420px; }
     button { padding: 16px 12px; font-size: 18px; border-radius: 12px; border:1px solid #ccc; background:#f7f7f7; }
     button:active { transform: scale(0.98); }
-    input[type=range] { width: 100%; max-width:420px; }
     .status { margin-top:10px; padding:10px; border-radius:12px; background:#f2f2ff; }
+    .hint { font-size: 13px; color:#555; margin-top:6px; }
   </style>
 </head>
 <body>
 <div class="wrap">
-  <h2>Rover Tank Control + Camera</h2>
+  <h2>Rover Control + Camera (No PWM)</h2>
   <img class="cam" src="/video" />
+  <div class="hint">Tekan & tahan tombol untuk jalan, lepas = stop.</div>
 
-  <div style="margin:12px 0;">
-    <label>Speed: <span id="spdVal">0.35</span></label><br>
-    <input id="spd" type="range" min="0" max="1" step="0.01" value="0.35">
-  </div>
-
-  <div class="grid">
+  <div class="grid" style="margin-top:12px;">
     <div></div>
     <button onpointerdown="send('forward')" onpointerup="send('stop')" onpointercancel="send('stop')">▲ Forward</button>
     <div></div>
@@ -202,18 +190,7 @@ def index():
 </div>
 
 <script>
-  const spd = document.getElementById('spd');
-  const spdVal = document.getElementById('spdVal');
   const statusBox = document.getElementById('status');
-
-  spd.addEventListener('input', async () => {
-    spdVal.textContent = spd.value;
-    await fetch('/speed', {
-      method:'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({speed: parseFloat(spd.value)})
-    });
-  });
 
   async function send(cmd) {
     const r = await fetch('/cmd', {
@@ -222,13 +199,13 @@ def index():
       body: JSON.stringify({cmd})
     });
     const j = await r.json();
-    statusBox.textContent = `Status: ${j.cmd} | speed=${j.speed.toFixed(2)} | camera=${j.camera_ok}`;
+    statusBox.textContent = `Status: ${j.cmd} | camera=${j.camera_ok}`;
   }
 
   setInterval(async () => {
     const r = await fetch('/status');
     const j = await r.json();
-    statusBox.textContent = `Status: ${j.last_cmd} | speed=${j.speed.toFixed(2)} | camera=${j.camera_ok}`;
+    statusBox.textContent = `Status: ${j.last_cmd} | camera=${j.camera_ok}`;
   }, 500);
 </script>
 </body>
@@ -242,40 +219,29 @@ def video():
 @app.get("/status")
 def status():
     with lock:
-        spd = state.speed
-        last_cmd = state.last_cmd
-        age = time.time() - state.last_cmd_ts if state.last_cmd_ts else None
-    return jsonify(speed=spd, last_cmd=last_cmd, last_cmd_age_s=age, camera_ok=camera_ok)
-
-@app.post("/speed")
-def api_speed():
-    data = request.get_json(force=True, silent=True) or {}
-    with lock:
-        state.speed = clamp(float(data.get("speed", 0.35)), 0.0, 1.0)
-    return jsonify(ok=True, speed=state.speed)
+        cmd = last_cmd
+        age = time.time() - last_cmd_ts if last_cmd_ts else None
+    return jsonify(last_cmd=cmd, last_cmd_age_s=age, camera_ok=camera_ok)
 
 @app.post("/cmd")
 def api_cmd():
     data = request.get_json(force=True, silent=True) or {}
     cmd = str(data.get("cmd", "stop")).lower()
 
-    with lock:
-        spd = clamp(state.speed, 0.0, 1.0)
-
     if cmd == "forward":
-        drive_tank(spd, 0.0)
+        cmd_forward()
     elif cmd == "back":
-        drive_tank(-spd, 0.0)
+        cmd_back()
     elif cmd == "left":
-        drive_tank(0.0, -spd * TURN_RATIO)
+        cmd_left_spin()
     elif cmd == "right":
-        drive_tank(0.0, spd * TURN_RATIO)
+        cmd_right_spin()
     else:
         cmd = "stop"
         stop_all()
 
     touch(cmd)
-    return jsonify(ok=True, cmd=cmd, speed=spd, camera_ok=camera_ok)
+    return jsonify(ok=True, cmd=cmd, camera_ok=camera_ok)
 
 if __name__ == "__main__":
     stop_all()
